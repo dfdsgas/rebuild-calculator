@@ -9,6 +9,8 @@ import {
 } from './data.js';
 import { deriveComplex, evaluate } from './engine.js';
 import AddComplex from './AddComplex.jsx';
+import PriceFlow from './PriceFlow.jsx';
+import { stageIdxOf, DATE_ROWS } from './projects.js';
 
 // =====================================================================
 // 재건축 수익계산기 v4
@@ -38,7 +40,7 @@ const fmtPp = (v) => { if (v === null || v === undefined || isNaN(v) || v <= -5)
 const fmtSignPct = (v) => { const p = Math.round(v * 1000) / 10; return p > 0 ? `+${p}%` : `${p}%`; };
 const fmtSignYears = (v) => { const y = Math.round(v * 10) / 10; return y > 0 ? `+${y.toFixed(1)}년` : `${y.toFixed(1)}년`; };
 const fmtDate = (d) => (d && d !== "-" ? `'${d.slice(2, 4)}.${Number(d.slice(5, 7))}.${Number(d.slice(8, 10))}` : "-");
-const fmtYM = (t) => { const m = SCHEDULE_BASE.m + Math.round(t * 12); const y = SCHEDULE_BASE.y + Math.floor((m - 1) / 12); return `'${String(y).slice(2)}.${((m - 1) % 12) + 1}`; };
+const fmtYM = (t) => { const tot = SCHEDULE_BASE.y * 12 + (SCHEDULE_BASE.m - 1) + Math.round(t * 12); return `'${String(Math.floor(tot / 12)).slice(2)}.${(tot % 12) + 1}`; };
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) < eps;
 const isBase = (a) => near(a.valueAdj, 0) && near(a.yearAdj, 0) && near(a.growth, BASE_ADJ.growth);
 
@@ -132,6 +134,8 @@ export default function App() {
   const [basis, setBasis] = useState("self");
   const [rankBy, setRankBy] = useState("annual");
   const [cost, setCost] = useState(DEFAULT_COST);
+  const [levyMode, setLevyMode] = useState("auto"); // 재초환: auto 자동 추정 | manual 직접 입력 | off 미반영
+  const [levyP, setLevyP] = useState({ rp: 0.69, normal: null, oneHouse: false });
   const [showAdv, setShowAdv] = useState(false);
   const [chartMode, setChartMode] = useState("annual");
   const [sensTab, setSensTab] = useState("tornado");
@@ -156,8 +160,25 @@ export default function App() {
     return () => { alive = false; };
   }, []);
 
+  // 정비사업 공식 현황(서울시 도시정비사업 통계): OpenAPI 실시간 → 실패 시 앱 내장 스냅샷
+  const [proj, setProj] = useState({ rows: [], kind: "loading" });
+  useEffect(() => {
+    let alive = true;
+    const snap = (reason) => fetch("/seoul_projects.json").then((r) => r.json())
+      .then((j) => { if (alive) setProj({ rows: j.rows || [], kind: "snap", asOf: j.asOf, updated: j.updated, reason }); })
+      .catch(() => { if (alive) setProj({ rows: [], kind: "none", reason: "정비사업 현황을 불러오지 못했습니다" }); });
+    fetch("/api/projects")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((j) => { if (!alive) return; if (j && j.ok && j.rows && j.rows.length) setProj({ rows: j.rows, kind: "live", fetchedAt: j.fetchedAt }); else snap((j && j.reason) || "응답 오류"); })
+      .catch(() => snap("정비사업 API 서버 미연결"));
+    return () => { alive = false; };
+  }, []);
+  const projOf = (c) => (c && c.projCode ? proj.rows.find((r) => r.c === String(c.projCode)) : null) || null;
+  const projText = proj.kind === "live" ? `서울 열린데이터광장 OpenAPI 실시간 조회(${new Date(proj.fetchedAt).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" })})`
+    : proj.kind === "snap" ? `앱 내장 스냅샷(통계 기준 ${proj.asOf ? proj.asOf.replace("-", ".") : "-"}, 데이터 갱신 ${proj.updated || "-"})` : "불러오는 중";
+
   const useLive = dataMode === "live" && liveStatus === "ok";
-  const opt = useMemo(() => ({ basis, ...cost }), [basis, cost]);
+  const opt = useMemo(() => ({ basis, ...cost, levyMode, ...levyP }), [basis, cost, levyMode, levyP]);
   const ACTIVE = useMemo(() => ALL.map((c) => ({ ...deriveComplex(c, useLive && !c.isCustom ? live : null), levy: levy[c.id] || 0 })), [ALL, useLive, live, levy]);
   const fmtYm = (ym) => `${ym.slice(0, 4)}.${Number(ym.slice(4, 6))}`;
   const periodText = useLive ? `${fmtYm(live.period.from)} ~ ${fmtYm(live.period.to)} (최근 12개월, 실시간 조회)` : `${TRADE_PERIOD}, 2026.9 수집 고정값`;
@@ -233,6 +254,7 @@ export default function App() {
             <span className="font-extrabold text-xl tracking-tight text-[#1F3864]">재건축 수익계산기</span>
           </div>
           <nav className="flex items-center gap-4 text-sm font-semibold text-slate-600">
+            <a href="#flow" className="hidden md:inline hover:text-[#1F3864]">시세 흐름</a>
             <a href="#stage" className="hidden md:inline hover:text-[#1F3864]">사업단계</a>
             <a href="#sens" className="hidden md:inline hover:text-[#1F3864]">민감도</a>
             <a href="#evidence" className="hidden sm:inline hover:text-[#1F3864]">근거 데이터</a>
@@ -288,8 +310,14 @@ export default function App() {
               <div className="text-[11px] font-bold text-slate-500 mb-1.5">② 총투자금 기준</div>
               <Toggle testid="basis" value={basis} onChange={setBasis} options={[["self", "자체 산정"], ["private", "민간 분석값"]]} />
               <div className="text-[10px] text-slate-500 mt-1.5 leading-snug">
-                {basis === "self" ? "실거래 매수가 + 분담금(고시·조합 발표) + 취득·보유비용. 재초환은 아래 고급 가정에서 입력" : "민간 분석 총투자금(매매가+분담금+재초환 추정) 고정값"}
+                {basis === "self" ? "실거래 매수가 + 분담금(고시·조합 발표) + 취득·보유비용 + 재초환" : "민간 분석 총투자금(매매가+분담금+재초환 추정) 고정값"}
               </div>
+              {basis === "self" && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-[11px] font-bold text-slate-500">재초환</span>
+                  <Toggle testid="levy" value={levyMode} onChange={setLevyMode} options={[["auto", "자동 추정"], ["manual", "직접 입력"], ["off", "미반영"]]} />
+                </div>
+              )}
             </div>
             <div className="rounded-xl border border-slate-200 p-3">
               <div className="text-[11px] font-bold text-slate-500 mb-1.5">③ 순위 기준</div>
@@ -392,8 +420,24 @@ export default function App() {
                   </p>
                 </div>
                 <div>
-                  <div className="text-xs font-bold text-slate-700 mb-2">재건축부담금(재초환) 추정 — 자체 산정에만 적용, 입주 시 납부</div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div className="text-xs font-bold text-slate-700 mb-2">재건축부담금(재초환) — 자체 산정에만 적용, 입주 시 납부 · 현재 <span className="text-[#1F3864]">{levyMode === "auto" ? "자동 추정" : levyMode === "manual" ? "직접 입력" : "미반영"}</span></div>
+                  {levyMode === "auto" && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-2">
+                      <RangeRow label="공시가격 현실화율" testid="rp" valueText={fmtPct(levyP.rp, 0)} min="0.5" max="1" step="0.01" value={levyP.rp} onChange={(v) => setLevyP({ ...levyP, rp: v })} />
+                      <div>
+                        <RangeRow label="정상주택가격상승률(연)" testid="normal" valueText={levyP.normal == null ? "시세 상승률과 동일" : fmtPct(levyP.normal, 1)} min="0" max="0.07" step="0.005"
+                          value={levyP.normal == null ? 0.035 : levyP.normal} onChange={(v) => setLevyP({ ...levyP, normal: v })} />
+                        <label className="text-[11px] text-slate-600 flex items-center gap-1 mt-1"><input type="checkbox" checked={levyP.normal == null} onChange={(e) => setLevyP({ ...levyP, normal: e.target.checked ? null : 0.03 })} /> 단지별 시세 상승률 가정과 동일하게</label>
+                      </div>
+                      <label className="sm:col-span-2 text-xs text-slate-700 flex items-center gap-1.5"><input data-testid="one-house" type="checkbox" checked={levyP.oneHouse} onChange={(e) => setLevyP({ ...levyP, oneHouse: e.target.checked })} /> 1세대 1주택 장기보유 감면 적용 (지금 매수 → 보유기간 = 입주까지 기간, 6년 10% ~ 10년 50%)</label>
+                      <p className="sm:col-span-2 text-[11px] text-slate-500 leading-relaxed">
+                        · 초과이익(1인당) = 준공 시 신축 공시가격 − 분담금 − 개시시점 공시가격 − 정상상승분 → 8천만원 초과분 5천만원 구간별 10~50% 누진<br />
+                        · 개시시점: 조합설립인가일, 부과기간 10년 초과 시 준공부터 역산 10년 · 현실화율 69%: 2025년 공동주택 적용률(이후 동결 기조) [확인필요]<br />
+                        · 대표 평형 조합원 기준 개략치로, 실제 부담금은 조합 전체 평균·한국부동산원 조사가격·인정 개발비용으로 산정되어 크게 다를 수 있음
+                      </p>
+                    </div>
+                  )}
+                  {levyMode === "manual" && <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {SHOWN.map((c) => (
                       <label key={c.id} className="text-[11px] text-slate-600">
                         {c.name}
@@ -405,10 +449,9 @@ export default function App() {
                         </div>
                       </label>
                     ))}
-                  </div>
-                  <p className="text-[11px] text-rose-600 mt-2 leading-relaxed">
-                    기본값 0 = 미반영. 재건축초과이익 환수에 관한 법률에 따른 부담금은 단지별 공식 통지액이 없어 넣지 않았습니다 [확인필요]. 고가 단지일수록 부담이 커 순위에 영향이 큽니다.
-                  </p>
+                  </div>}
+                  {levyMode === "manual" && <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">조합·구청 발표 예정액 등 알고 있는 값을 1인당 억원으로 입력합니다.</p>}
+                  {levyMode === "off" && <p className="text-[11px] text-rose-600 leading-relaxed">재초환을 빼고 계산 중입니다. 고가 단지일수록 수익률이 과대평가됩니다.</p>}
                 </div>
               </div>
             )}
@@ -430,7 +473,7 @@ export default function App() {
             </div>
           </div>
 
-          {showAdd && <AddComplex onAdd={addCustom} onClose={() => setShowAdd(false)} />}
+          {showAdd && <AddComplex onAdd={addCustom} onClose={() => setShowAdd(false)} projects={proj.rows} projKind={proj.kind} />}
           <div data-testid="manage-bar" className="bg-white rounded-xl border border-slate-200 p-3 flex flex-col gap-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-bold text-slate-700">비교 대상 {SHOWN.length}개 <span className="font-normal text-slate-500">— 눌러서 표시/숨기기, 추가 단지는 ✕로 삭제</span></span>
@@ -506,6 +549,7 @@ export default function App() {
                   </div>
                   <div className="space-y-1.5 text-xs mb-3">
                     <div className="flex justify-between"><span className="text-slate-500">총투자 → 입주시 가치</span><span className="font-semibold">{fmtMoney(c.totalCost)} → {fmtMoney(c.VT)}</span></div>
+                    {c.selfBasis && levyMode !== "off" && <div className="flex justify-between"><span className="text-slate-500">재초환 {levyMode === "auto" ? "추정" : "입력"}</span><span className="font-semibold text-rose-600" data-testid={`levy-card-${c.id}`}>{fmtMoney(c.levy)}</span></div>}
                     <div className="flex justify-between"><span className="text-slate-500">실투자금(전세 끼고)</span><span className="font-semibold" data-testid={`gap-${c.id}`}>{c.gap === null ? "전세 미입력" : fmtMoney(c.gap)}</span></div>
                     <div className="flex justify-between"><span className="text-slate-500">적용 가정</span><span className="font-semibold text-[#1F3864]">{fmtVal(c.V0)} · {c.years.toFixed(1)}년 · 연 {(c.a.growth * 100).toFixed(1)}%</span></div>
                     <div className="flex justify-between gap-2"><span className="text-slate-500 whitespace-nowrap">다음 단계 기대</span><span className="font-semibold text-right">{c.next ? `${c.next.stage}(${fmtYM(c.next.t)}) 연 ${fmtPct(c.nextReturn, 1)}` : "-"}</span></div>
@@ -542,7 +586,8 @@ export default function App() {
                       ["+ 취득부대비", (c) => fmtMoney(c.acqCost)],
                       ["+ 분담금 (− 환급)", (c) => fmtSigned(c.share)],
                       ["+ 보유세 누계", (c) => fmtMoney(c.holdTotal)],
-                      ["+ 재초환 추정", (c) => (c.levy ? fmtMoney(c.levy) : "미반영")],
+                      [levyMode === "auto" ? "+ 재초환 (자동 추정)" : levyMode === "manual" ? "+ 재초환 (직접 입력)" : "+ 재초환", (c) => (levyMode === "off" ? "미반영" : fmtMoney(c.levy))],
+                      ...(levyMode === "auto" ? [["   └ 1인당 초과이익 추정", (c) => fmtMoney(c.levyCalc.excess)]] : []),
                     ] : [["민간 분석 총투자금", (c) => (c.privTotal == null ? "없음→자체 산정" : fmtMoney(c.privTotal))]]),
                     ["= 총투자금", (c) => fmtMoney(c.totalCost), true],
                     ["실투자금 (매수+취득 − 전세)", (c) => (c.gap === null ? "-" : fmtMoney(c.gap))],
@@ -601,6 +646,10 @@ export default function App() {
             </div>
           </div>
         </section>
+
+        {/* ===================== 03-1 시세 흐름 비교 ===================== */}
+        <PriceFlow list={shownRes} colorOf={colorOf} fmtYM={fmtYM}
+          basisNote={basis === "private" ? "민간 분석값 기준이라 재초환은 경로에 별도 반영되지 않음(자체 산정으로 전환 권장)" : levyMode === "off" ? "재초환 미반영" : `재초환 ${levyMode === "auto" ? "자동 추정" : "직접 입력"} 반영`} />
 
         {/* ===================== 03 사업단계·시간가치 ===================== */}
         <section id="stage" data-testid="sec-stage" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 sm:p-8 scroll-mt-20">
@@ -790,7 +839,8 @@ export default function App() {
                 <div className="space-y-1 text-xs">
                   <div className="flex justify-between"><span>매수가 {d.rep.label} <SrcBadge src={d.buySrc} date={d.snapDate} /></span><b>{fmtVal(d.buy)}</b></div>
                   <div className="flex justify-between"><span>분담금(− 환급)</span><b>{fmtSigned(d.share)}</b></div>
-                  <div className="flex justify-between"><span>취득·보유비용{d.levy ? "·재초환" : ""}</span><b>{fmtMoney(d.acqCost + d.holdTotal + (d.levy || 0))}</b></div>
+                  <div className="flex justify-between"><span>취득·보유비용</span><b>{fmtMoney(d.acqCost + d.holdTotal)}</b></div>
+                  <div className="flex justify-between"><span>재초환 ({levyMode === "auto" ? "자동 추정" : levyMode === "manual" ? "직접 입력" : "미반영"})</span><b data-testid="detail-levy">{fmtMoney(d.levy || 0)}</b></div>
                   <div className="flex justify-between pt-1 border-t border-slate-100 text-[#1F3864]"><span className="font-bold">자체 산정 총투자금</span><b>{fmtMoney(d.buy + d.acqCost + d.share + d.holdTotal + (d.levy || 0))}</b></div>
                   <div className="flex justify-between text-slate-500"><span>참고: 민간 분석 총투자금</span><span>{d.privTotal == null ? "없음" : fmtMoney(d.privTotal)}</span></div>
                 </div>
@@ -798,7 +848,7 @@ export default function App() {
             </div>
             <div className="mt-3 text-[11px] text-slate-600 bg-slate-50 rounded-lg p-3 border border-slate-100 leading-relaxed">
               · 분담금 근거: {d.shareSrc}<br />· 참고: {d.shareAlt}<br />
-              · 민간 분석 총투자금은 매매가 + 추가분담금 + 재초환 추정액(출처: {PRIVATE_SOURCE}). 자체 산정은 재초환 미반영(고급 가정에서 입력 가능)
+              · 민간 분석 총투자금은 매매가 + 추가분담금 + 재초환 추정액(출처: {PRIVATE_SOURCE}). 자체 산정의 재초환은 아래 ⑥ 개략 산정 참조
             </div>
           </div>
 
@@ -895,12 +945,91 @@ export default function App() {
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600 w-1/3">위치</th><td className="py-3 px-4">{d.location}</td></tr>
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">진행 단계</th><td className="py-3 px-4"><span className="font-bold text-[#1F3864] mr-2">{STAGES[d.stageIdx]}</span>({d.stageNote}) <GradeBadge g={d.grade} /></td></tr>
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">세대수</th><td className="py-3 px-4">{d.householdsBefore ? `${d.householdsBefore.toLocaleString()} → ${d.householdsAfter.toLocaleString()}세대` : "미입력(사용자 추가 단지)"}</td></tr>
-                  <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">시공사</th><td className="py-3 px-4">{d.builder}</td></tr>
+                  <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">시공사</th><td className="py-3 px-4" data-testid="builder">{d.builder}{d.builderSrc && <div className="text-[11px] text-slate-400 mt-0.5">{d.builderSrc}</div>}</td></tr>
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">비례율</th><td className="py-3 px-4">{d.ratio ? `${(d.ratio * 100).toFixed(2)}%` : "미공개"} <span className="text-[11px] text-slate-400">({d.ratioSource})</span></td></tr>
-                  <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">투자 유의</th><td className="py-3 px-4 leading-relaxed">조합원 지위양도 제한(도시정비법 제39조), 재건축초과이익 환수 대상 여부 확인 필요 [확인필요]</td></tr>
+                  <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">투자 유의</th><td className="py-3 px-4 leading-relaxed">조합원 지위양도 제한(도시정비법 제39조), 재건축초과이익 환수 대상(⑥ 개략 산정 참조), 부담금은 준공 후 부과 시점 조합원이 납부 [확인필요]</td></tr>
                 </tbody></table>
               </div>
             </div>
+          </div>
+          {/* 정비사업 공식 현황 (서울시 도시정비사업 통계) */}
+          {(() => {
+            const P = projOf(d);
+            const pIdx = stageIdxOf(P);
+            const fmtD = (v) => (v ? v.replace(/-/g, ".") : "—");
+            return (
+              <div data-testid="sec-official" className="mt-8">
+                <h4 className="text-sm font-black text-slate-800 mb-1">⑤-1 정비사업 공식 현황 — {d.name}</h4>
+                <p className="text-[11px] text-slate-500 mb-3">출처: 서울특별시 도시정비사업 통계(서울 열린데이터광장 OA-22856, 분기 갱신) · {projText}</p>
+                {!P ? (
+                  <p className="text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-3" data-testid="official-none">
+                    {proj.kind === "loading" ? "불러오는 중…" : d.isCustom ? "이 단지는 서울시 정비사업 통계에서 매칭되는 구역을 찾지 못했습니다(정비구역 미지정·리모델링·타 시도 등). 단계는 추가 시 입력값을 사용합니다." : "공식 현황을 불러오지 못했습니다."}
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+                      <table className="w-full text-xs text-left" data-testid="official-table"><tbody className="divide-y divide-slate-200">
+                        <tr><th className="py-2.5 px-4 bg-slate-50 font-bold text-slate-600 w-1/3">구역명</th><td className="py-2.5 px-4">{P.n} <span className="text-[11px] text-slate-400">({P.gu} {P.j} · {P.t} · {P.pp})</span></td></tr>
+                        <tr><th className="py-2.5 px-4 bg-slate-50 font-bold text-slate-600">공식 추진단계</th><td className="py-2.5 px-4"><b className="text-[#1F3864]" data-testid="official-stage">{P.s}</b>{pIdx != null && <span className="text-slate-500"> → 앱 단계 '{STAGES[pIdx]}'</span>}</td></tr>
+                        <tr><th className="py-2.5 px-4 bg-slate-50 font-bold text-slate-600">기존 → 건립 세대</th><td className="py-2.5 px-4">{P.h0 ? P.h0.toLocaleString() : "—"} → {P.h1 ? P.h1.toLocaleString() : "—"}세대{P.h1s ? ` (분양 ${P.h1s.toLocaleString()} · 임대 ${(P.h1r || 0).toLocaleString()})` : ""}</td></tr>
+                        {d.unionDate || P.d_union ? <tr><th className="py-2.5 px-4 bg-slate-50 font-bold text-slate-600">재초환 개시시점</th><td className="py-2.5 px-4">조합설립인가일 {fmtD(P.d_union || d.unionDate)} (입주 10년 초과 시 입주일로부터 10년 전) — ⑥ 산정에 반영</td></tr> : null}
+                      </tbody></table>
+                      {pIdx != null && pIdx !== d.stageIdx && (
+                        <p className="text-[11px] leading-relaxed p-3 border-t border-slate-100 bg-amber-50 text-amber-800" data-testid="official-lag">
+                          {pIdx < d.stageIdx
+                            ? `※ 앱은 '${STAGES[d.stageIdx]}' 단계로 계산합니다. 통계는 분기 갱신이라 최근 인가(${d.stageNote})가 아직 반영되지 않은 것으로 보입니다 — 인가 고시로 확인.`
+                            : `※ 통계상 단계('${STAGES[pIdx]}')가 앱 설정('${STAGES[d.stageIdx]}')보다 앞서 있습니다. 단지 정보를 갱신하거나 [확인필요].`}
+                        </p>
+                      )}
+                    </div>
+                    <div className="overflow-x-auto rounded-xl border border-slate-200">
+                      <table className="w-full text-xs" data-testid="official-dates"><thead className="bg-slate-50 text-slate-600"><tr><th className="p-2.5 text-left">절차</th><th className="p-2.5 text-right">인가·승인일</th></tr></thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {DATE_ROWS.map(([k, l]) => (
+                            <tr key={k} className={P[k] ? "" : "text-slate-300"}><td className="p-2.5">{l}</td><td className="p-2.5 text-right font-semibold">{fmtD(P[k])}{k === "d_impl" && P.d_impl2 && P.d_impl2 !== P.d_impl ? ` (변경 ${fmtD(P.d_impl2)})` : ""}{k === "d_mgmt" && P.d_mgmt2 && P.d_mgmt2 !== P.d_mgmt ? ` (변경 ${fmtD(P.d_mgmt2)})` : ""}</td></tr>
+                          ))}
+                        </tbody></table>
+                    </div>
+                  </div>
+                )}
+                <p className="text-[11px] text-slate-400 mt-2">이용조건: 해당 데이터셋은 '공공저작물 자유이용 허락표시 적용 안함'으로 표시되어 있어 학술 과제 범위에서 출처를 밝혀 인용합니다 [확인필요]. 시공사는 통계 항목에 없어 언론 보도·조합 공지로 별도 확인한 값입니다.</p>
+              </div>
+            );
+          })()}
+          {/* 재초환 개략 산정 (근거 섹션 하위) */}
+          <div data-testid="sec-levy" className="mt-8">
+          <h4 className="text-sm font-black text-slate-800 mb-1">⑥ 재건축부담금(재초환) 개략 산정 — {d.name}</h4>
+          <p className="text-[11px] text-slate-500 mb-3">재건축초과이익 환수에 관한 법률(2024.3.27 시행 개정) 구조를 대표 평형 조합원 1인 기준으로 단순화 · 단위 억원 · 현재 가정 적용</p>
+          {(() => { const L = d.levyCalc; return (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-xs" data-testid="levy-table"><tbody className="divide-y divide-slate-100">
+                  <tr><td className="p-2.5">종료시점 주택가액 (입주시 신축가치 {fmtMoney(d.VT)} × 현실화율 {fmtPct(L.rp, 0)})</td><td className="p-2.5 text-right font-semibold">{fmtMoney(L.endVal)}</td></tr>
+                  <tr><td className="p-2.5">− 개발비용 1인당 ≈ 분담금 (환급이면 +)</td><td className="p-2.5 text-right">{fmtSigned(-d.share)}</td></tr>
+                  <tr><td className="p-2.5">− 개시시점 주택가액 ({L.tStart < 0 ? `${(-L.tStart).toFixed(1)}년 전` : `${L.tStart.toFixed(1)}년 후`}, {fmtYM(L.tStart)} · 현재 시세 {fmtVal(d.buy)} × 현실화율 환산)</td><td className="p-2.5 text-right">−{fmtMoney(L.startVal)}</td></tr>
+                  <tr><td className="p-2.5">− 정상주택가격상승분 (연 {fmtPct(L.n, 1)} × {L.period.toFixed(1)}년)</td><td className="p-2.5 text-right">−{fmtMoney(L.normal)}</td></tr>
+                  <tr className="bg-indigo-50/50 font-bold text-[#1F3864]"><td className="p-2.5">= 1인당 초과이익</td><td className="p-2.5 text-right">{fmtMoney(L.excess)}</td></tr>
+                  <tr><td className="p-2.5">부담금 (8천만원 면제, 5천만원 구간별 10~50%)</td><td className="p-2.5 text-right">{fmtMoney(L.gross)}</td></tr>
+                  <tr><td className="p-2.5">× (1 − 장기보유 감면 {fmtPct(L.relief, 0)}) {levyP.oneHouse ? "" : "— 감면 미적용"}</td><td className="p-2.5 text-right font-bold text-rose-600" data-testid="levy-result">{fmtMoney(L.levy)}</td></tr>
+                </tbody></table>
+              </div>
+              <div className="space-y-3">
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-xs"><thead className="bg-slate-50 text-slate-600"><tr><th className="p-2 text-left">1인당 초과이익</th><th className="p-2 text-right">부과율</th><th className="p-2 text-right">누적 기본액</th></tr></thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {[["8천만원 이하", "면제", "-"], ["8천만~1.3억", "10%", "0"], ["1.3억~1.8억", "20%", "500만"], ["1.8억~2.3억", "30%", "1,500만"], ["2.3억~2.8억", "40%", "3,000만"], ["2.8억 초과", "50%", "5,000만"]].map(([a, b, c2]) => (
+                        <tr key={a}><td className="p-2">{a}</td><td className="p-2 text-right">{b}</td><td className="p-2 text-right">{c2}</td></tr>))}
+                    </tbody></table>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 rounded-lg p-3 border border-slate-100">
+                  · 개발비용 ≈ 분담금: 일반분양 수입으로 충당된 사업비는 비례율 산식상 1인당 '−분담금'으로 상쇄되므로 단순화<br />
+                  · 실제 산정은 조합원 전체 평균, 준공 시점 한국부동산원 조사가격, 법령상 인정 개발비용으로 하므로 본 값과 크게 다를 수 있음 [확인필요]<br />
+                  · 참고: 서울 46개 단지 예상 부담금 1인당 평균 약 1.2억, 반포3주구 약 3.2억, 한강맨션 약 6.8억(2026.8 기준 국회의원실 공개 자료, 언론 보도)<br />
+                  · 현행 제도 유지 중이며 폐지 법안은 국회 계류 상태(2026.9 보도 기준) — 제도 변경 시 결과 달라짐
+                </p>
+              </div>
+            </div>
+          ); })()}
           </div>
         </section>
 
@@ -930,6 +1059,7 @@ export default function App() {
           <p>• 신축 시세·사업기간·상승률·단계 프리미엄·취득·보유비용은 가정값이며, 조정한 값에 따라 결과가 달라집니다. 양도세·대출이자는 미반영.</p>
           <p>• 실거래: {TRADE_SOURCE}, {periodText}</p>
           <p>• 사업 정보·분담금: 서울시 정비계획 결정 고시, 구청 사업시행계획인가 고시, 조합 발표</p>
+          <p>• 정비사업 추진단계·인가일·세대수: 서울특별시 도시정비사업 통계(서울 열린데이터광장 OA-22856), {projText}</p>
           <p>• 민간 분석 현재가치·소요시간·총투자금: {PRIVATE_SOURCE}</p>
         </footer>
       </main>

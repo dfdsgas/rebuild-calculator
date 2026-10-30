@@ -56,6 +56,7 @@ export function parseItems(xml) {
     items.push({
       name: tag(x, "aptNm"),
       umd: tag(x, "umdNm"),
+      jibun: tag(x, "jibun"), // 지번(정비사업 현황 매칭용)
       area,
       amount, // 만원
       date: `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
@@ -67,6 +68,13 @@ export function parseItems(xml) {
   const totalCount = Number(tag(xml, "totalCount")) || items.length;
   const resultCode = tag(xml, "resultCode");
   return { items, totalCount, resultCode };
+}
+
+// 월별 중위가 시계열 [[YYYYMM, 중위가(억), 건수], ...]
+export function monthlySeries(list) {
+  const by = new Map();
+  for (const t of list) { const ym = t.date.slice(0, 7).replace("-", ""); if (!by.has(ym)) by.set(ym, []); by.get(ym).push(t.amount); }
+  return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([ym, arr]) => [ym, Math.round(median(arr) / 100) / 100, arr.length]);
 }
 
 export const median = (arr) => {
@@ -96,6 +104,7 @@ export function summarize(spec, items) {
     area: Math.round(repArea * 100) / 100,
     ppp: Math.round(median(amounts) / ((repArea / 0.75) * 0.3025)), // 만원/공급평 = 중위가 ÷ 대표 공급평
     names: [...new Set(hits.map((t) => t.name))],
+    monthly: monthlySeries(hits),
   };
 }
 

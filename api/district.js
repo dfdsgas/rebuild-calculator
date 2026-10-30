@@ -3,7 +3,7 @@
 //  GET /api/district?lawd=11680&to=202608  지정 월까지 12개월(재현·발표용)
 //  - 아파트 매매(상세) 12회 + 분양권전매 12회 = 24회 호출, 결과 6시간 CDN 캐시
 //  - 응답: 단지별·평형별 거래 요약(complexes), 주변 신축·입주권 84㎡ 후보(comps)
-import { TRADE_URL, SILV_URL, fetchMonth, pool, months12, monthsEnding, median, startBudget } from "./trades.js";
+import { TRADE_URL, SILV_URL, fetchMonth, pool, months12, monthsEnding, median, startBudget, monthlySeries } from "./trades.js";
 
 const SEOUL_LAWD = new Set(["11110", "11140", "11170", "11200", "11215", "11230", "11260", "11290", "11305", "11320", "11350", "11380", "11410", "11440", "11470", "11500", "11530", "11545", "11560", "11590", "11620", "11650", "11680", "11710", "11740"]);
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -27,16 +27,17 @@ export function summarizeDistrict(trades, silvs, endYear) {
   const byCx = new Map();
   for (const t of ok) {
     const k = `${t.umd}|${t.name}`;
-    if (!byCx.has(k)) byCx.set(k, { n: t.name, u: t.umd, years: [], list: [] });
+    if (!byCx.has(k)) byCx.set(k, { n: t.name, u: t.umd, years: [], list: [], jb: new Map() });
     const e = byCx.get(k); e.list.push(t); if (t.buildYear) e.years.push(t.buildYear);
+    if (t.jibun) e.jb.set(t.jibun, (e.jb.get(t.jibun) || 0) + 1);
   }
   const complexes = [];
   for (const e of byCx.values()) {
     const groups = new Map();
     for (const t of e.list) { const g = Math.round(t.area); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(t); }
     complexes.push({
-      n: e.n, u: e.u, y: e.years.length ? Math.round(median(e.years)) : null, c: e.list.length,
-      g: [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([g, list]) => ({ k: g, ...stat(list) })),
+      n: e.n, u: e.u, j: [...e.jb.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0])[0] || "", y: e.years.length ? Math.round(median(e.years)) : null, c: e.list.length,
+      g: [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([g, list]) => ({ k: g, ...stat(list), s: monthlySeries(list) })), // s: 월별 중위가
     });
   }
   complexes.sort((a, b) => b.c - a.c);

@@ -1,11 +1,13 @@
 import React, { useState, useMemo } from 'react';
-import { SEOUL_GU, STAGES, PYEONG_84, DEFAULT_COST, defaultYears, arriveFrom, SHARE_DEFAULTS } from './data.js';
+import { SEOUL_GU, STAGES, PYEONG_84, DEFAULT_COST, defaultYears, arriveFrom, SHARE_DEFAULTS, yearsSince } from './data.js';
+import { matchProject, stageIdxOf } from './projects.js';
 import { deriveComplex, evaluate } from './engine.js';
 
 // =====================================================================
 // 단지 추가 — 서울 어느 재건축 단지든 비교 목록에 추가
 //  자동: 대상 단지 평형별 실거래, 주변 신축·입주권 84㎡ 후보 (/api/district)
-//  입력: 사업단계·기간, 분담금(직접 또는 간이 산식), 전세(선택)
+//  자동: 정비사업 추진단계·조합설립인가일·세대수 (서울시 도시정비사업 통계, 지번 매칭)
+//  입력: 사업단계·기간(자동값 수정 가능), 분담금(직접 또는 간이 산식), 전세(선택)
 // =====================================================================
 
 const fmt = (v, d = 1) => (v === null || v === undefined || isNaN(v) ? "-" : `${Number(v).toFixed(d)}`);
@@ -21,7 +23,7 @@ function Step({ n, title, children, done }) {
   );
 }
 
-export default function AddComplex({ onAdd, onClose }) {
+export default function AddComplex({ onAdd, onClose, projects = [], projKind = "none" }) {
   const [lawd, setLawd] = useState("");
   const [status, setStatus] = useState("idle"); // idle | loading | ok | fail
   const [reason, setReason] = useState("");
@@ -39,8 +41,18 @@ export default function AddComplex({ onAdd, onClose }) {
   const [prev, setPrev] = useState("");
   const [ratio, setRatio] = useState(String(SHARE_DEFAULTS.ratio * 100));
   const [jeonse, setJeonse] = useState("");
+  const [projCode, setProjCode] = useState(""); // 매칭된 정비구역 코드("" = 없음)
+  const [projBy, setProjBy] = useState(null);   // "지번" | "이름" | "직접" | null
 
   const guName = (SEOUL_GU.find(([c]) => c === lawd) || [])[1] || "";
+  const guProjects = useMemo(() => projects.filter((r) => r.gu === guName).sort((a, b) => a.n.localeCompare(b.n, "ko")), [projects, guName]);
+  const matchOf = (c) => matchProject(guProjects, { gu: guName, umd: c.u, jibun: c.j, name: c.n });
+  const P = projCode ? guProjects.find((r) => r.c === projCode) : null;
+  const applyProj = (row, by) => {
+    setProjCode(row ? row.c : ""); setProjBy(row ? by : null);
+    const k = stageIdxOf(row);
+    if (k != null) { const kk = Math.min(k, 6); setStageIdx(kk); setYears(defaultYears(kk)); }
+  };
   const endYear = data ? Number(data.period.to.slice(0, 4)) : cur;
 
   const load = (code) => {
@@ -75,6 +87,7 @@ export default function AddComplex({ onAdd, onClose }) {
   const selectComplex = (k) => {
     setCxKey(k);
     const c = data.complexes.find((x) => `${x.u}|${x.n}` === k);
+    const m = matchOf(c); applyProj(m ? m.p : null, m ? m.by : null);
     const main = [...c.g].sort((a, b) => b.c - a.c)[0];
     setAreaK(main ? main.k : null);
     // 기본 비교단지 2곳: 준공 15년 이내 매매 또는 입주권 중 점수순
@@ -105,9 +118,10 @@ export default function AddComplex({ onAdd, onClose }) {
     return {
       id, name: cx.n, location: `${guName} ${cx.u}`, isCustom: true, lawd,
       snapDate: data.fetchedAt.slice(0, 10), period: data.period,
-      stageIdx, stageNote: "사용자 입력",
-      householdsBefore: null, householdsAfter: null, builder: "-", buildYear: cx.y,
-      rep: { key: `g${grp.k}`, label: `전용 ${grp.a}㎡`, buy: grp.m, jeonse: jeonse === "" ? null : parseFloat(jeonse) },
+      stageIdx, stageNote: P ? (stageIdxOf(P) === stageIdx ? `서울시 정비사업 통계: ${P.s}` : `사용자 입력 (통계상 ${P.s})`) : "사용자 입력",
+      projCode: P ? P.c : null, unionDate: P && P.d_union ? P.d_union : null, unionAgo: P && P.d_union ? yearsSince(P.d_union) : null,
+      householdsBefore: P && P.h0 && P.h1 ? P.h0 : null, householdsAfter: P && P.h0 && P.h1 ? P.h1 : null, builder: "-", buildYear: cx.y,
+      rep: { key: `g${grp.k}`, label: `전용 ${grp.a}㎡`, buy: grp.m, jeonse: jeonse === "" ? null : parseFloat(jeonse), monthly: grp.s || [] },
       share: Math.round(share * 100) / 100,
       shareSrc: shareMode === "direct" ? "사용자 입력" : `간이 산식: 조합원분양가 ${fmt(memberV, 2)}억 − 종전평가 ${fmt(prevV, 2)}억 × 비례율 ${fmt(ratioV * 100, 1)}%`,
       shareAlt: usedDefault ? "조합원분양가·종전평가 기본값은 검증 4개 단지(정비계획 고시) 평균 비율로 추정 [가정] — 실제 고시·조합 자료로 바꿔 넣을 것" : "사용자 입력값",
@@ -127,7 +141,7 @@ export default function AddComplex({ onAdd, onClose }) {
     const c = deriveComplex(build(), null);
     return evaluate(c, { valueAdj: 0, yearAdj: 0, growth: 0.035 }, { basis: "self", ...DEFAULT_COST });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, cxKey, areaK, picked, stageIdx, years, shareMode, shareDirect, member, prev, ratio, jeonse]);
+  }, [ready, cxKey, areaK, picked, stageIdx, years, shareMode, shareDirect, member, prev, ratio, jeonse, projCode]);
 
   const input = "border border-slate-300 rounded-md px-2 py-1 text-xs w-24";
 
@@ -136,7 +150,7 @@ export default function AddComplex({ onAdd, onClose }) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-black text-slate-900 text-lg">단지 추가 — 서울 재건축 단지 직접 분석</h3>
-          <p className="text-xs text-slate-500 mt-1">실거래·주변 신축 시세는 국토부 API로 자동 조회하고, 사업단계·분담금만 입력합니다. 추가한 단지는 이 브라우저에 저장됩니다.</p>
+          <p className="text-xs text-slate-500 mt-1">실거래·주변 신축 시세는 국토부 API, 추진단계·조합설립인가일은 서울시 정비사업 통계로 자동 조회합니다. 분담금만 입력하면 됩니다. 추가한 단지는 이 브라우저에 저장됩니다.</p>
         </div>
         <button onClick={onClose} className="text-xs font-bold text-slate-500 hover:text-slate-900">닫기 ✕</button>
       </div>
@@ -163,9 +177,10 @@ export default function AddComplex({ onAdd, onClose }) {
             {list.length === 0 && <div className="p-3 text-xs text-slate-500">검색 결과가 없습니다. '준공 30년 이상만'을 해제해 보세요.</div>}
             {list.map((c) => {
               const k = `${c.u}|${c.n}`;
+              const m = matchOf(c);
               return (
                 <button key={k} onClick={() => selectComplex(k)} className={`w-full text-left px-3 py-2 text-xs flex justify-between hover:bg-slate-50 ${k === cxKey ? "bg-indigo-50 font-bold text-[#1F3864]" : ""}`}>
-                  <span>{c.n} <span className="text-slate-400">({c.u})</span></span>
+                  <span>{c.n} <span className="text-slate-400">({c.u})</span>{m && <span className="ml-1.5 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-semibold text-[10px]">재건축 {m.p.s}</span>}</span>
                   <span className="text-slate-500">준공 {c.y || "-"} · 12개월 {c.c}건</span>
                 </button>
               );
@@ -230,6 +245,24 @@ export default function AddComplex({ onAdd, onClose }) {
 
       {cx && (
         <Step n="4" title="사업단계 · 입주까지 기간" done>
+          <div className="mb-3 text-xs rounded-lg border border-slate-200 bg-slate-50 p-3" data-testid="add-proj">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-bold text-slate-700">정비구역 매칭</span>
+              <select data-testid="add-proj-select" value={projCode} onChange={(e) => applyProj(guProjects.find((r) => r.c === e.target.value) || null, "직접")} className="border border-slate-300 rounded-md px-1.5 py-1 text-xs max-w-[260px]">
+                <option value="">매칭 없음(직접 입력)</option>
+                {guProjects.map((r) => <option key={r.c} value={r.c}>{r.n} ({r.j} · {r.s})</option>)}
+              </select>
+              {P && <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${projBy === "지번" ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{projBy === "지번" ? "지번 일치" : projBy === "이름" ? "이름 유사 — 확인 필요" : "직접 선택"}</span>}
+            </div>
+            {P ? (
+              <p className="mt-1.5 text-slate-600" data-testid="add-proj-info">
+                공식 단계 <b className="text-[#1F3864]">{P.s}</b> · 조합설립인가 {P.d_union ? P.d_union.replaceAll("-", ".") : "—"}{P.d_impl ? ` · 사업시행인가 ${P.d_impl.replaceAll("-", ".")}` : ""}{P.d_mgmt ? ` · 관리처분인가 ${P.d_mgmt.replaceAll("-", ".")}` : ""} · {P.h0 ? P.h0.toLocaleString() : "—"}→{P.h1 ? P.h1.toLocaleString() : "—"}세대
+                <span className="block text-[11px] text-slate-400 mt-0.5">서울시 도시정비사업 통계(분기 갱신) — 최근 인가가 늦게 반영될 수 있어 아래 단계는 바꿀 수 있습니다. 조합설립인가일은 재초환 개시시점에 쓰입니다.</span>
+              </p>
+            ) : (
+              <p className="mt-1.5 text-slate-500 text-[11px]">{projKind === "none" || !projects.length ? "정비사업 현황을 불러오지 못해 단계를 직접 고릅니다." : "통계에서 같은 지번의 재건축 구역을 찾지 못했습니다. 목록에서 직접 고르거나 단계를 직접 입력하세요."}</p>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <select data-testid="add-stage" value={stageIdx} onChange={(e) => { const s = Number(e.target.value); setStageIdx(s); setYears(defaultYears(s)); }} className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm">
               {STAGES.slice(0, 7).map((s, i) => <option key={s} value={i}>{s}</option>)}

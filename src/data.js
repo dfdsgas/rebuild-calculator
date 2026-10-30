@@ -22,15 +22,17 @@ export const GRADE_NOTE = {
   "A+": "관리처분인가 이후 — 분담금 사실상 확정, 기간 리스크 위주",
 };
 
+// rep.monthly: 대표 평형 월별 실거래 중위가 [YYYYMM, 억원, 건수] (2025.9~2026.8, 국토부 API 수집값)
 export const DEFAULT_COST = { acq: 0.04, hold: 0.004, rf: 0.03 };
 
 export const COMPLEXES = [
   {
     id: "sinbanpo2", name: "신반포2차", location: "서초구 잠원동",
     stageIdx: 2, stageNote: "조합설립인가(2020.11) 후 통합심의 통과, 사업시행인가 준비",
-    householdsBefore: 1572, householdsAfter: 2057, builder: "현대건설",
+    householdsBefore: 1572, householdsAfter: 2057, builder: "현대건설", builderSrc: "2024.12 시공자 선정 (언론 보도 기준)",
+    projCode: "1320", unionDate: "2020-11-16",
     // 자체 산정
-    rep: { key: "sb2_69", label: "전용 68.91㎡(23평형)", buy: 41.0, jeonse: 4.72 },
+    rep: { key: "sb2_69", label: "전용 68.91㎡(23평형)", buy: 41.0, jeonse: 4.72, monthly: [["202509", 40.25, 2], ["202510", 41, 1], ["202512", 38.5, 1], ["202602", 42.13, 2], ["202604", 41, 1], ["202605", 39.2, 1], ["202606", 40.75, 2], ["202607", 39.8, 1]] },
     share: 10.29, shareSrc: "정비계획 고시(서울시 제2024-350호) 기반 추정: 조합원분양가 25.73억 − 종전평가 20.50억 × 비례율 75.33%",
     shareAlt: "조합 발표(2026.9): 23평→28평(전용65) 4.8억 · 30평→36평(전용84) 6.15억 — 23평→84㎡는 미발표",
     // 민간 분석
@@ -53,8 +55,9 @@ export const COMPLEXES = [
   {
     id: "apgujeong5", name: "압구정5구역", location: "강남구 압구정동",
     stageIdx: 1, stageNote: "정비계획 결정(2025.10), 시공자 선정(2026.5), 통합심의 준비",
-    householdsBefore: 1232, householdsAfter: 1401, builder: "현대건설·한화",
-    rep: { key: "apg1_50", label: "한양1차 전용 49.98㎡", buy: 40.5, jeonse: 4.75 },
+    householdsBefore: 1232, householdsAfter: 1401, builder: "현대건설", builderSrc: "2026.5.30 조합 총회 선정(DL이앤씨와 경쟁) — 머니투데이 보도",
+    projCode: "1006", unionDate: "2021-02-22",
+    rep: { key: "apg1_50", label: "한양1차 전용 49.98㎡", buy: 40.5, jeonse: 4.75, monthly: [["202510", 40, 1], ["202512", 40.85, 1], ["202601", 41.5, 1], ["202602", 42, 1], ["202605", 39, 1], ["202606", 38.9, 1], ["202608", 40.5, 1]] },
     share: 12.04, shareSrc: "정비계획 고시(서울시 제2025-556호) 기반 추정: 조합원분양가 27.64억 − 종전평가 23.00억 × 비례율 67.81% [확인필요]",
     shareAlt: "조합 공식 분담금 미발표. 민간 분석은 평균 10~30억 추정",
     privTotal: 57.5, privInit: 41.0, valueHigh: 73.0, yearsHigh: 13.0,
@@ -75,8 +78,9 @@ export const COMPLEXES = [
   {
     id: "eunma", name: "대치 은마", location: "강남구 대치동",
     stageIdx: 3, stageNote: "사업시행계획인가(강남구 제2026-130호, 2026.7.2), 조합원분양신청 진행",
-    householdsBefore: 4424, householdsAfter: 5850, builder: "미정",
-    rep: { key: "eunma_77", label: "31평형(전용 76.79㎡)", buy: 35.0, jeonse: 6.83 },
+    householdsBefore: 4424, householdsAfter: 5850, builder: "삼성물산·GS건설 [확인필요]", builderSrc: "2002년 추진위 단계 선정분 — 뉴데일리 2026.7.9 보도, 현 조합 승계 여부 확인 필요",
+    projCode: "1007", unionDate: "2023-09-26",
+    rep: { key: "eunma_77", label: "31평형(전용 76.79㎡)", buy: 35.0, jeonse: 6.83, monthly: [["202509", 35.3, 3], ["202510", 36.45, 4], ["202511", 37.93, 2], ["202512", 37.6, 2], ["202602", 36.2, 2], ["202603", 35.35, 4], ["202605", 34, 1], ["202606", 34.65, 2], ["202607", 33.6, 2], ["202608", 33.4, 5]] },
     share: 7.44, shareSrc: "조합 발표: 31평 → 35평형(전용84) 분담금 7.44억 (비례율 82.19%)",
     shareAlt: "정비계획 고시 기반 추정 4.19억(비례율 100.47%) — 조합 발표가 최신",
     privTotal: 41.8, privInit: 30.0, valueHigh: 48.0, yearsHigh: 8.5,
@@ -97,8 +101,9 @@ export const COMPLEXES = [
   {
     id: "jamsil5", name: "잠실주공5단지", location: "송파구 잠실동",
     stageIdx: 3, stageNote: "사업시행계획인가(송파구 제2026-90호, 2026.7.1), 2027년 관리처분 예상",
-    householdsBefore: 3930, householdsAfter: 6411, builder: "미정",
-    rep: { key: "js5_76", label: "34평형(전용 76.5㎡)", buy: 40.27, jeonse: 4.93 },
+    householdsBefore: 3930, householdsAfter: 6411, builder: "삼성물산·GS건설·HDC현대산업개발 컨소시엄", builderSrc: "2000년 선정, 기존 시공권 유지 — 뉴데일리 2026.7.9 보도",
+    projCode: "1342", unionDate: "2013-12-19",
+    rep: { key: "js5_76", label: "34평형(전용 76.5㎡)", buy: 40.27, jeonse: 4.93, monthly: [["202509", 37.87, 4], ["202510", 39.47, 8], ["202511", 39.12, 6], ["202512", 38.77, 9], ["202601", 41.37, 8], ["202602", 42.35, 3], ["202603", 41.27, 1], ["202604", 39.9, 4], ["202605", 40.27, 1], ["202606", 40.57, 3], ["202607", 40.27, 10], ["202608", 40.91, 4]] },
     share: -2.77, shareSrc: "조합 발표: 34평 → 34평형(전용84) 2.77억 환급",
     shareAlt: "정비계획 고시 기반 추정 4.67억 환급(비례율 108.11%) — 조합 발표가 최신",
     privTotal: 38.4, privInit: 36.0, valueHigh: 51.0, yearsHigh: 10.5,
@@ -136,3 +141,7 @@ export function arriveFrom(stageIdx) {
 }
 // 분담금 간이 산식 기본 비율 [가정] — 검증 4개 단지(정비계획 고시) 평균
 export const SHARE_DEFAULTS = { memberToNew: 0.47, prevToBuy: 0.56, ratio: 0.88 };
+
+// 조합설립인가일 → 일정 기준일(2026.9.30)까지 경과연수 (재초환 개시시점 산정용)
+export const yearsSince = (ymd) => { if (!ymd) return null; const [y, m] = ymd.split("-").map(Number); return (SCHEDULE_BASE.y * 12 + SCHEDULE_BASE.m - (y * 12 + m)) / 12; };
+COMPLEXES.forEach((c) => { if (c.unionDate) c.unionAgo = yearsSince(c.unionDate); });
