@@ -15,7 +15,7 @@ export function deriveComplex(c, live) {
     const useLive = !r.isJeonse && lv && lv.count > 0;
     const base = useLive
       ? { ...r, count: lv.count, median: lv.median, max: lv.max, last: lv.last, ppp: lv.ppp, src: "live" }
-      : { ...r, src: "fixed" };
+      : { ...r, src: c.isCustom ? "snap" : "fixed" };
     return { ...base, value: (base.ppp * (1 + r.adj) * PYEONG_84) / 10000 };
   });
   const used = comps.filter((r) => r.weight > 0);
@@ -26,7 +26,7 @@ export function deriveComplex(c, live) {
     const lv = live && live.own && live.own[t.key];
     return lv && lv.count > 0
       ? { ...t, count: lv.count, median: lv.median, max: lv.max, last: lv.last, src: "live" }
-      : { ...t, src: "fixed" };
+      : { ...t, src: c.isCustom ? "snap" : "fixed" };
   });
   const repTrade = ownTrades.find((t) => t.key === c.rep.key);
   return {
@@ -34,7 +34,7 @@ export function deriveComplex(c, live) {
     baseValue: (valueLow + c.valueHigh) / 2,
     baseYears: (c.yearsLow + c.yearsHigh) / 2,
     buy: repTrade ? repTrade.median : c.rep.buy,
-    buySrc: repTrade ? repTrade.src : "fixed",
+    buySrc: repTrade ? repTrade.src : (c.isCustom ? "snap" : "fixed"),
     buyLast: repTrade ? repTrade.last : null,
     buyCount: repTrade ? repTrade.count : null,
   };
@@ -64,10 +64,11 @@ export function evaluate(c, a, opt) {
   const share = c.share * (1 + (a.shareAdj || 0));
   const acqCost = buy * opt.acq;
   const holdYear = buy * opt.hold;
-  const levy = opt.basis === "self" ? (c.levy || 0) : 0; // 재건축부담금(재초환) 추정 — 입주 시 납부 가정
+  const selfBasis = opt.basis === "self" || c.privTotal == null; // 민간 분석값이 없는 단지(사용자 추가)는 자체 산정
+  const levy = selfBasis ? (c.levy || 0) : 0; // 재건축부담금(재초환) 추정 — 입주 시 납부 가정
   const nHold = Math.max(0, Math.ceil(T) - 1);
   let totalCost, annualReturn, cfs;
-  if (opt.basis === "self") {
+  if (selfBasis) {
     totalCost = buy + acqCost + share + levy + holdYear * nHold;
     cfs = [{ t: 0, v: -(buy + acqCost) }];
     for (let k = 1; k <= nHold; k++) cfs.push({ t: k, v: -holdYear });
@@ -79,7 +80,7 @@ export function evaluate(c, a, opt) {
     annualReturn = Math.pow(VT / totalCost, 1 / T) - 1;
   }
   const profit = VT - totalCost;
-  const gap = buy + acqCost - c.rep.jeonse;
+  const gap = c.rep.jeonse == null ? null : buy + acqCost - c.rep.jeonse;
 
   // 단계별 기대가격 경로 (대표 평형 시세 기준, 자체 분담금 사용)
   const net = VT - share - levy;
@@ -96,7 +97,7 @@ export function evaluate(c, a, opt) {
   const nextReturn = next && next.t > 0 ? Math.pow(next.price / buy, 1 / next.t) - 1 : null;
 
   return {
-    ...c, a, isValid: annualReturn !== null, years: T, V0, VT, buy, share, levy, acqCost, holdYear, nHold,
+    ...c, a, selfBasis, isValid: annualReturn !== null, years: T, V0, VT, buy, share, levy, acqCost, holdYear, nHold,
     holdTotal: holdYear * nHold, totalCost, profit, totalReturn: profit / totalCost,
     annualReturn: annualReturn === null ? -9 : annualReturn,
     req, riskAdj: (annualReturn === null ? -9 : annualReturn) - req, gap, grade: gradeOf(c.stageIdx),

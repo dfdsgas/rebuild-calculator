@@ -8,6 +8,7 @@ import {
   TRADE_PERIOD, TRADE_SOURCE, PRIVATE_SOURCE
 } from './data.js';
 import { deriveComplex, evaluate } from './engine.js';
+import AddComplex from './AddComplex.jsx';
 
 // =====================================================================
 // 재건축 수익계산기 v4
@@ -20,6 +21,10 @@ import { deriveComplex, evaluate } from './engine.js';
 const BASE_ADJ = { valueAdj: 0, yearAdj: 0, growth: 0.035 };
 const GROWTH_PRESETS = [[0, "0%"], [0.02, "2.0%"], [0.035, "3.5%"], [0.053, "5.3%"]];
 const COLORS = { sinbanpo2: "#3B82F6", apgujeong5: "#F59E0B", eunma: "#10B981", jamsil5: "#1F3864" };
+const EXTRA_COLORS = ["#E11D48", "#8B5CF6", "#0EA5E9", "#84CC16", "#F97316", "#14B8A6", "#A855F7", "#64748B"];
+const STORE_KEY = "rebuild-calculator-custom-v1";
+const loadCustom = () => { try { const v = JSON.parse(window.localStorage.getItem(STORE_KEY) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
+const saveCustom = (v) => { try { window.localStorage.setItem(STORE_KEY, JSON.stringify(v)); } catch { /* 저장 불가 환경 무시 */ } };
 const GRADE_STYLE = { C: "bg-rose-100 text-rose-800", B: "bg-amber-100 text-amber-800", A: "bg-emerald-100 text-emerald-800", "A+": "bg-emerald-600 text-white" };
 
 const fmtMoney = (v) => (v !== null && v !== undefined && !isNaN(v) ? `${Number(v).toFixed(1)}억` : "-");
@@ -34,7 +39,8 @@ const fmtYM = (t) => { const m = SCHEDULE_BASE.m + Math.round(t * 12); const y =
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) < eps;
 const isBase = (a) => near(a.valueAdj, 0) && near(a.yearAdj, 0) && near(a.growth, BASE_ADJ.growth);
 
-function SrcBadge({ src }) {
+function SrcBadge({ src, date }) {
+  if (src === "snap") return <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 text-[10px] font-bold whitespace-nowrap">{date ? `${date.slice(2).replaceAll("-", ".")} 조회` : "추가 시 조회"}</span>;
   return src === "live"
     ? <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold whitespace-nowrap">실시간</span>
     : <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-bold whitespace-nowrap">'26.8 수집</span>;
@@ -87,18 +93,31 @@ function SectionHead({ no, title, desc, right }) {
     </div>
   );
 }
-function ComplexSelect({ value, onChange, testid }) {
+function ComplexSelect({ value, onChange, testid, list }) {
   return (
     <select data-testid={testid} value={value} onChange={(e) => onChange(e.target.value)}
       className="text-sm font-bold border border-slate-300 rounded-xl px-3 py-2 bg-white text-[#1F3864]">
-      {COMPLEXES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      {list.map((c) => <option key={c.id} value={c.id}>{c.name}{c.isCustom ? " (추가)" : ""}</option>)}
     </select>
   );
 }
 
 export default function App() {
-  const [adj, setAdj] = useState(() => Object.fromEntries(COMPLEXES.map((c) => [c.id, { ...BASE_ADJ }])));
-  const [levy, setLevy] = useState(() => Object.fromEntries(COMPLEXES.map((c) => [c.id, 0])));
+  const [custom, setCustom] = useState(loadCustom);
+  const ALL = useMemo(() => [...COMPLEXES, ...custom], [custom]);
+  const [adj, setAdj] = useState(() => Object.fromEntries([...COMPLEXES, ...loadCustom()].map((c) => [c.id, { ...BASE_ADJ }])));
+  const [levy, setLevy] = useState(() => Object.fromEntries([...COMPLEXES, ...loadCustom()].map((c) => [c.id, 0])));
+  const [showAdd, setShowAdd] = useState(false);
+  useEffect(() => { saveCustom(custom); }, [custom]);
+  const addCustom = (c) => {
+    setAdj((p) => ({ ...p, [c.id]: { ...BASE_ADJ } })); setLevy((p) => ({ ...p, [c.id]: 0 }));
+    setCustom((p) => [...p, c]); setShowAdd(false); setDetailId(c.id);
+  };
+  const removeCustom = (id) => {
+    setCustom((p) => p.filter((c) => c.id !== id));
+    [setDetailId, setPathId, setSensId].forEach((f) => f((cur) => (cur === id ? "jamsil5" : cur)));
+  };
+  const colorOf = (id) => COLORS[id] || EXTRA_COLORS[Math.max(0, custom.findIndex((c) => c.id === id)) % EXTRA_COLORS.length];
   const [mode, setMode] = useState("all");
   const [basis, setBasis] = useState("self");
   const [rankBy, setRankBy] = useState("annual");
@@ -129,7 +148,7 @@ export default function App() {
 
   const useLive = dataMode === "live" && liveStatus === "ok";
   const opt = useMemo(() => ({ basis, ...cost }), [basis, cost]);
-  const ACTIVE = useMemo(() => COMPLEXES.map((c) => ({ ...deriveComplex(c, useLive ? live : null), levy: levy[c.id] })), [useLive, live, levy]);
+  const ACTIVE = useMemo(() => ALL.map((c) => ({ ...deriveComplex(c, useLive && !c.isCustom ? live : null), levy: levy[c.id] || 0 })), [ALL, useLive, live, levy]);
   const fmtYm = (ym) => `${ym.slice(0, 4)}.${Number(ym.slice(4, 6))}`;
   const periodText = useLive ? `${fmtYm(live.period.from)} ~ ${fmtYm(live.period.to)} (최근 12개월, 실시간 조회)` : `${TRADE_PERIOD}, 2026.9 수집 고정값`;
   const fetchedText = useLive ? new Date(live.fetchedAt).toLocaleString("ko-KR", { timeZone: "Asia/Seoul", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "";
@@ -137,18 +156,18 @@ export default function App() {
   const setAll = (key, val) => setAdj((p) => Object.fromEntries(Object.keys(p).map((id) => [id, { ...p[id], [key]: val }])));
   const setOne = (id, key, val) => setAdj((p) => ({ ...p, [id]: { ...p[id], [key]: val } }));
   const resetOne = (id) => setAdj((p) => ({ ...p, [id]: { ...BASE_ADJ } }));
-  const applyPreset = (v, y, g) => setAdj(Object.fromEntries(COMPLEXES.map((c) => [c.id, { valueAdj: v, yearAdj: y, growth: g }])));
-  const uniform = (key) => { const vs = COMPLEXES.map((c) => adj[c.id][key]); return vs.every((v) => near(v, vs[0])) ? vs[0] : null; };
-  const avg = (key) => COMPLEXES.reduce((s, c) => s + adj[c.id][key], 0) / COMPLEXES.length;
+  const applyPreset = (v, y, g) => setAdj(Object.fromEntries(ALL.map((c) => [c.id, { valueAdj: v, yearAdj: y, growth: g }])));
+  const uniform = (key) => { const vs = ALL.map((c) => adj[c.id][key]); return vs.every((v) => near(v, vs[0])) ? vs[0] : null; };
+  const avg = (key) => ALL.reduce((s, c) => s + adj[c.id][key], 0) / ALL.length;
   const uV = uniform("valueAdj"), uY = uniform("yearAdj"), uG = uniform("growth");
   const allUniform = uV !== null && uY !== null && uG !== null;
 
-  const results = useMemo(() => ACTIVE.map((c) => evaluate(c, adj[c.id], opt)), [ACTIVE, adj, opt]);
+  const results = useMemo(() => ACTIVE.map((c) => evaluate(c, adj[c.id] || BASE_ADJ, opt)), [ACTIVE, adj, opt]);
   const ranked = useMemo(() => [...results].sort((x, y) => (rankBy === "annual" ? y.annualReturn - x.annualReturn : y.riskAdj - x.riskAdj)), [results, rankBy]);
   const rankOf = (id) => ranked.findIndex((c) => c.id === id) + 1;
   const byId = (id) => results.find((r) => r.id === id);
   const activeById = (id) => ACTIVE.find((c) => c.id === id);
-  const d = byId(detailId);
+  const d = byId(detailId) || byId("jamsil5");
 
   const goDetail = (id) => { setDetailId(id); const el = document.getElementById("evidence"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); };
 
@@ -165,14 +184,14 @@ export default function App() {
 
   // 민감도: 토네이도
   const tornado = useMemo(() => {
-    const c = activeById(sensId); const a = adj[sensId]; const base = evaluate(c, a, opt).annualReturn;
+    const c = activeById(sensId) || activeById("jamsil5"); const a = adj[c.id] || BASE_ADJ; const base = evaluate(c, a, opt).annualReturn;
     const f = (o) => (evaluate(c, { ...a, ...o }, opt).annualReturn - base) * 100;
     const rows = [
       { name: "신축 시세 ±10%", lo: f({ valueAdj: a.valueAdj - 0.1 }), hi: f({ valueAdj: a.valueAdj + 0.1 }) },
       { name: "사업기간 ±2년", lo: f({ yearAdj: a.yearAdj + 2 }), hi: f({ yearAdj: a.yearAdj - 2 }) },
       { name: "연 상승률 ±1%p", lo: f({ growth: Math.max(0, a.growth - 0.01) }), hi: f({ growth: a.growth + 0.01 }) },
     ];
-    if (basis === "self") {
+    if (basis === "self" || c.privTotal == null) {
       rows.push({ name: "매수가 ±10%", lo: f({ buyAdj: 0.1 }), hi: f({ buyAdj: -0.1 }) });
       rows.push({ name: c.share >= 0 ? "분담금 ±30%" : "환급금 ±30%", lo: f({ shareAdj: c.share >= 0 ? 0.3 : -0.3 }), hi: f({ shareAdj: c.share >= 0 ? -0.3 : 0.3 }) });
     }
@@ -190,7 +209,7 @@ export default function App() {
     return "bg-emerald-300 text-emerald-950 font-bold";
   };
 
-  const p = byId(pathId);
+  const p = byId(pathId) || byId("jamsil5");
   const pathData = p.path.filter((s, k) => k >= p.stageIdx).map((s) => ({ ...s, label: s.k === p.stageIdx ? `현재(${STAGES[p.stageIdx]})` : s.stage, priceR: +s.price.toFixed(2) }));
 
   return (
@@ -321,14 +340,14 @@ export default function App() {
                         min="-0.30" max="0.30" step="0.01" value={a.valueAdj} onChange={(v) => setOne(c.id, "valueAdj", v)}>
                         <Chip active={near(a.valueAdj, vLow)} onClick={() => setOne(c.id, "valueAdj", vLow)}>실거래 {c.valueLow.toFixed(1)}</Chip>
                         <Chip active={near(a.valueAdj, 0)} onClick={() => setOne(c.id, "valueAdj", 0)}>기준 {Math.round(c.baseValue * 100) / 100}</Chip>
-                        <Chip active={near(a.valueAdj, vHigh)} onClick={() => setOne(c.id, "valueAdj", vHigh)}>민간 {c.valueHigh.toFixed(1)}</Chip>
+                        {!c.isCustom && <Chip active={near(a.valueAdj, vHigh)} onClick={() => setOne(c.id, "valueAdj", vHigh)}>민간 {c.valueHigh.toFixed(1)}</Chip>}
                       </RangeRow>
                       <RangeRow label="입주까지 기간" testid={`y-${c.id}`} valueText={`${yrs.toFixed(1)}년`} sub={`기준 대비 ${fmtSignYears(a.yearAdj)}`}
                         valueClass={a.yearAdj > 0.01 ? "text-rose-600" : a.yearAdj < -0.01 ? "text-emerald-600" : "text-slate-800"}
                         min="-3" max="5" step="0.1" value={a.yearAdj} onChange={(v) => setOne(c.id, "yearAdj", v)}>
-                        <Chip active={near(a.yearAdj, yLow)} onClick={() => setOne(c.id, "yearAdj", yLow)}>자체 {c.yearsLow}년</Chip>
+                        {!c.isCustom && <Chip active={near(a.yearAdj, yLow)} onClick={() => setOne(c.id, "yearAdj", yLow)}>자체 {c.yearsLow}년</Chip>}
                         <Chip active={near(a.yearAdj, 0)} onClick={() => setOne(c.id, "yearAdj", 0)}>기준 {c.baseYears}년</Chip>
-                        <Chip active={near(a.yearAdj, yHigh)} onClick={() => setOne(c.id, "yearAdj", yHigh)}>민간 {c.yearsHigh}년</Chip>
+                        {!c.isCustom && <Chip active={near(a.yearAdj, yHigh)} onClick={() => setOne(c.id, "yearAdj", yHigh)}>민간 {c.yearsHigh}년</Chip>}
                       </RangeRow>
                       <RangeRow label="연 상승률" testid={`g-${c.id}`} valueText={`${(a.growth * 100).toFixed(1)}%`} valueClass="text-[#1F3864]"
                         min="0" max="0.07" step="0.005" value={a.growth} onChange={(v) => setOne(c.id, "growth", v)}>
@@ -363,11 +382,11 @@ export default function App() {
                 <div>
                   <div className="text-xs font-bold text-slate-700 mb-2">재건축부담금(재초환) 추정 — 자체 산정에만 적용, 입주 시 납부</div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {COMPLEXES.map((c) => (
+                    {ALL.map((c) => (
                       <label key={c.id} className="text-[11px] text-slate-600">
                         {c.name}
                         <div className="flex items-center gap-1 mt-0.5">
-                          <input type="number" min="0" max="30" step="0.5" value={levy[c.id]} data-testid={`levy-${c.id}`}
+                          <input type="number" min="0" max="30" step="0.5" value={levy[c.id] || 0} data-testid={`levy-${c.id}`}
                             onChange={(e) => setLevy({ ...levy, [c.id]: Math.max(0, parseFloat(e.target.value) || 0) })}
                             className="w-full border border-slate-300 rounded-md px-2 py-1 text-xs" />
                           <span>억</span>
@@ -391,10 +410,18 @@ export default function App() {
               <span className="text-xs font-black tracking-widest text-[#1F3864] uppercase">SECTION 02</span>
               <h2 className="text-2xl font-black text-slate-900 mt-0.5">단지별 기대수익률 랭킹</h2>
             </div>
+            <div className="flex flex-col sm:items-end gap-2">
+            <button data-testid="add-open" onClick={() => setShowAdd(!showAdd)} className="px-3 py-2 rounded-lg bg-[#1F3864] text-white text-xs font-bold hover:bg-[#162a4d]">＋ 다른 재건축 단지 추가</button>
             <p className="text-xs text-slate-500 font-medium">
               순위 기준: <strong className="text-[#1F3864]">{rankBy === "annual" ? "연환산 수익률(IRR)" : "위험조정 초과수익"}</strong> · 총투자금: <strong className="text-[#1F3864]">{basis === "self" ? "자체 산정" : "민간 분석값"}</strong>
             </p>
+            </div>
           </div>
+
+          {showAdd && <AddComplex onAdd={addCustom} onClose={() => setShowAdd(false)} />}
+          {custom.length > 0 && (
+            <p className="text-[11px] text-slate-500">· 기본 4개 단지는 고시·조합 자료로 정밀 검증한 사례, <span className="text-sky-700 font-bold">사용자 추가</span> 단지는 자동 조회 + 입력값 기반 추정입니다. 추가 단지는 이 브라우저에만 저장됩니다.</p>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
             {ranked.map((c, idx) => {
@@ -409,7 +436,13 @@ export default function App() {
                     </div>
                   </div>
                   <h3 className="text-lg font-black text-slate-900 tracking-tight">{c.name}</h3>
-                  <p className="text-xs text-slate-500 mb-3">{c.location} · {c.householdsBefore.toLocaleString()}→{c.householdsAfter.toLocaleString()}세대</p>
+                  <p className="text-xs text-slate-500 mb-3">{c.location}{c.householdsBefore ? ` · ${c.householdsBefore.toLocaleString()}→${c.householdsAfter.toLocaleString()}세대` : c.buildYear ? ` · ${c.buildYear}년 준공` : ""}</p>
+                  {c.isCustom && (
+                    <div className="flex items-center justify-between -mt-2 mb-3 text-[10px]">
+                      <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-bold">사용자 추가 · 자동 추정</span>
+                      <button data-testid={`remove-${c.id}`} onClick={() => removeCustom(c.id)} className="text-slate-400 hover:text-rose-600 font-semibold">삭제</button>
+                    </div>
+                  )}
                   <div className="bg-slate-50 p-3.5 rounded-xl mb-3 border border-slate-100">
                     <div className="flex justify-between items-end">
                       <div>
@@ -428,12 +461,12 @@ export default function App() {
                   </div>
                   <div className="space-y-1.5 text-xs mb-3">
                     <div className="flex justify-between"><span className="text-slate-500">총투자 → 입주시 가치</span><span className="font-semibold">{fmtMoney(c.totalCost)} → {fmtMoney(c.VT)}</span></div>
-                    <div className="flex justify-between"><span className="text-slate-500">실투자금(전세 끼고)</span><span className="font-semibold" data-testid={`gap-${c.id}`}>{fmtMoney(c.gap)}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">실투자금(전세 끼고)</span><span className="font-semibold" data-testid={`gap-${c.id}`}>{c.gap === null ? "전세 미입력" : fmtMoney(c.gap)}</span></div>
                     <div className="flex justify-between"><span className="text-slate-500">적용 가정</span><span className="font-semibold text-[#1F3864]">{fmtVal(c.V0)} · {c.years.toFixed(1)}년 · 연 {(c.a.growth * 100).toFixed(1)}%</span></div>
                     <div className="flex justify-between gap-2"><span className="text-slate-500 whitespace-nowrap">다음 단계 기대</span><span className="font-semibold text-right">{c.next ? `${c.next.stage}(${fmtYM(c.next.t)}) 연 ${fmtPct(c.nextReturn, 1)}` : "-"}</span></div>
                   </div>
                   <div className="rounded-lg bg-slate-50 border border-slate-100 p-2.5 text-[11px] leading-relaxed space-y-1">
-                    <div><span className="font-bold text-slate-600">현재 실거래</span> {top.label} 중위 {top.median.toFixed(1)}억 ({top.count}건, 최근 {fmtDate(top.last)}) <SrcBadge src={top.src} /></div>
+                    <div><span className="font-bold text-slate-600">현재 실거래</span> {top.label} 중위 {top.median.toFixed(1)}억 ({top.count}건, 최근 {fmtDate(top.last)}) <SrcBadge src={top.src} date={c.snapDate} /></div>
                     <div><span className="font-bold text-slate-600">신축시세 근거</span> {c.compShort}</div>
                     <button onClick={() => goDetail(c.id)} data-testid={`evidence-link-${c.id}`} className="font-semibold text-[#1F3864] hover:underline">근거 데이터 보기 ↓</button>
                   </div>
@@ -465,9 +498,9 @@ export default function App() {
                       ["+ 분담금 (− 환급)", (c) => fmtSigned(c.share)],
                       ["+ 보유세 누계", (c) => fmtMoney(c.holdTotal)],
                       ["+ 재초환 추정", (c) => (c.levy ? fmtMoney(c.levy) : "미반영")],
-                    ] : [["민간 분석 총투자금", (c) => fmtMoney(c.privTotal)]]),
+                    ] : [["민간 분석 총투자금", (c) => (c.privTotal == null ? "없음→자체 산정" : fmtMoney(c.privTotal))]]),
                     ["= 총투자금", (c) => fmtMoney(c.totalCost), true],
-                    ["실투자금 (매수+취득 − 전세)", (c) => fmtMoney(c.gap)],
+                    ["실투자금 (매수+취득 − 전세)", (c) => (c.gap === null ? "-" : fmtMoney(c.gap))],
                     ["신축 84㎡ 시세 (현재 / 평당)", (c) => `${fmtVal(c.V0)} / ${(c.V0 / PYEONG_84).toFixed(2)}억`],
                     ["입주까지 기간", (c) => `${c.years.toFixed(1)}년`],
                     ["입주시 가치", (c) => fmtMoney(c.VT)],
@@ -528,7 +561,7 @@ export default function App() {
         <section id="stage" data-testid="sec-stage" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 sm:p-8 scroll-mt-20">
           <SectionHead no="03" title="사업단계·시간가치 분석"
             desc="재건축 가격은 단계를 통과할 때마다 위험이 줄어 계단식으로 오릅니다. 단계가 이를수록 요구수익률이 높습니다."
-            right={<div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">경로 단지:</span><ComplexSelect testid="path-select" value={pathId} onChange={setPathId} /></div>} />
+            right={<div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">경로 단지:</span><ComplexSelect list={ALL} testid="path-select" value={p.id} onChange={setPathId} /></div>} />
 
           <div className="mt-6 overflow-x-auto">
             <table className="w-full text-xs min-w-[860px] text-center" data-testid="stage-table">
@@ -565,7 +598,7 @@ export default function App() {
                     <XAxis dataKey="label" stroke="#64748B" fontSize={10} interval={0} angle={-20} textAnchor="end" />
                     <YAxis stroke="#64748B" fontSize={11} tickFormatter={(v) => `${v}억`} domain={["auto", "auto"]} />
                     <Tooltip formatter={(v) => [`${Number(v).toFixed(2)}억`, "기대가격"]} />
-                    <Line type="stepAfter" dataKey="priceR" stroke={COLORS[p.id]} strokeWidth={3} dot={{ r: 4 }} />
+                    <Line type="stepAfter" dataKey="priceR" stroke={colorOf(p.id)} strokeWidth={3} dot={{ r: 4 }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -602,8 +635,8 @@ export default function App() {
             right={<Toggle testid="sens" value={sensTab} onChange={setSensTab} options={[["tornado", "토네이도"], ["heat", "히트맵"], ["line", "상승률별 추이"]]} />} />
           <div className="pt-6">
             {sensTab !== "line" && (
-              <div className="flex items-center gap-2 mb-4"><span className="text-xs font-bold text-slate-700">단지 선택:</span><ComplexSelect testid="sens-select" value={sensId} onChange={setSensId} />
-                <span className="text-xs text-slate-500">현재 연환산 <b className="text-[#1F3864]">{fmtPct(byId(sensId).annualReturn)}</b></span></div>
+              <div className="flex items-center gap-2 mb-4"><span className="text-xs font-bold text-slate-700">단지 선택:</span><ComplexSelect list={ALL} testid="sens-select" value={activeById(sensId) ? sensId : "jamsil5"} onChange={setSensId} />
+                <span className="text-xs text-slate-500">현재 연환산 <b className="text-[#1F3864]">{fmtPct((byId(sensId) || byId("jamsil5")).annualReturn)}</b></span></div>
             )}
             {sensTab === "tornado" && (
               <div>
@@ -625,7 +658,7 @@ export default function App() {
               </div>
             )}
             {sensTab === "heat" && (() => {
-              const hc = activeById(sensId); const ha = adj[sensId];
+              const hc = activeById(sensId) || activeById("jamsil5"); const ha = adj[hc.id] || BASE_ADJ;
               return (
                 <div>
                   <div className="text-xs text-slate-600 mb-3"><strong>기간 조정(가로)</strong> × <strong>시세 조정(세로)</strong> → 연환산 수익률 · 상승률은 이 단지의 현재 가정 <strong>{(ha.growth * 100).toFixed(1)}%</strong></div>
@@ -673,7 +706,7 @@ export default function App() {
                       <Tooltip formatter={(v, n) => [`${v}%`, n]} />
                       <Legend wrapperStyle={{ fontSize: '12px' }} />
                       {uG !== null && <ReferenceLine x={`${(Math.round(uG * 200) / 2).toFixed(1)}%`} stroke="#EF4444" strokeDasharray="4 4" label={{ value: '현재 가정', position: 'top', fill: '#EF4444', fontSize: 11 }} />}
-                      {COMPLEXES.map((c) => <Line key={c.id} type="monotone" dataKey={c.name} stroke={COLORS[c.id]} strokeWidth={c.id === "jamsil5" ? 3 : 2} dot={false} />)}
+                      {ALL.map((c) => <Line key={c.id} type="monotone" dataKey={c.name} stroke={colorOf(c.id)} strokeWidth={c.id === "jamsil5" ? 3 : 2} dot={false} />)}
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -685,7 +718,7 @@ export default function App() {
         {/* ===================== 05 근거 데이터 ===================== */}
         <section id="evidence" data-testid="sec-evidence" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 sm:p-8 scroll-mt-20">
           <SectionHead no="05" title="근거 데이터 및 계산 과정" desc="신축 시세를 어느 단지에서, 언제 거래된 얼마의 실거래로 추정했는지 확인하세요."
-            right={<div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">단지 전환:</span><ComplexSelect testid="detail-select" value={detailId} onChange={setDetailId} /></div>} />
+            right={<div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">단지 전환:</span><ComplexSelect list={ALL} testid="detail-select" value={d.id} onChange={setDetailId} /></div>} />
 
           <div className="mt-6">
             <h4 className="text-sm font-black text-slate-800 mb-3">① 기준값 구성</h4>
@@ -710,11 +743,11 @@ export default function App() {
               <div className="rounded-xl border border-slate-200 p-4">
                 <div className="text-xs font-bold text-slate-500 mb-2">총투자금 ({basis === "self" ? "자체 산정" : "민간 분석값"})</div>
                 <div className="space-y-1 text-xs">
-                  <div className="flex justify-between"><span>매수가 {d.rep.label} <SrcBadge src={d.buySrc} /></span><b>{fmtVal(d.buy)}</b></div>
+                  <div className="flex justify-between"><span>매수가 {d.rep.label} <SrcBadge src={d.buySrc} date={d.snapDate} /></span><b>{fmtVal(d.buy)}</b></div>
                   <div className="flex justify-between"><span>분담금(− 환급)</span><b>{fmtSigned(d.share)}</b></div>
                   <div className="flex justify-between"><span>취득·보유비용{d.levy ? "·재초환" : ""}</span><b>{fmtMoney(d.acqCost + d.holdTotal + (d.levy || 0))}</b></div>
                   <div className="flex justify-between pt-1 border-t border-slate-100 text-[#1F3864]"><span className="font-bold">자체 산정 총투자금</span><b>{fmtMoney(d.buy + d.acqCost + d.share + d.holdTotal + (d.levy || 0))}</b></div>
-                  <div className="flex justify-between text-slate-500"><span>참고: 민간 분석 총투자금</span><span>{fmtMoney(d.privTotal)}</span></div>
+                  <div className="flex justify-between text-slate-500"><span>참고: 민간 분석 총투자금</span><span>{d.privTotal == null ? "없음" : fmtMoney(d.privTotal)}</span></div>
                 </div>
               </div>
             </div>
@@ -739,7 +772,7 @@ export default function App() {
                   {d.comps.map((r, i) => (
                     <tr key={i} className={r.weight === 0 ? "text-slate-400" : "text-slate-800"}>
                       <td className="p-2.5 font-bold">{r.name}</td><td className="p-2.5">{r.built}</td><td className="p-2.5">{r.type}</td>
-                      <td className="p-2.5 text-right">{r.count}</td><td className="p-2.5"><SrcBadge src={r.src} /></td>
+                      <td className="p-2.5 text-right">{r.count}</td><td className="p-2.5"><SrcBadge src={r.src} date={d.snapDate} /></td>
                       <td className="p-2.5 text-right font-semibold">{r.isJeonse ? `전세 ${r.median.toFixed(1)}억` : `${r.median.toFixed(1)}억`}</td>
                       <td className="p-2.5 text-right">{r.max ? `${r.max.toFixed(1)}억` : "-"}</td><td className="p-2.5">{fmtDate(r.last)}</td>
                       <td className="p-2.5 text-right">{r.ppp.toLocaleString()}</td><td className="p-2.5 text-right">{r.adj ? `+${Math.round(r.adj * 100)}%` : "0%"}</td>
@@ -775,7 +808,7 @@ export default function App() {
                       <td className="p-2.5 font-bold">{t.label}{t.key === d.rep.key && <span className="ml-1 text-[10px] text-[#1F3864]">(대표 매물)</span>}</td>
                       <td className="p-2.5 text-right">{t.count}</td><td className="p-2.5 text-right font-semibold">{fmtVal(t.median)}</td>
                       <td className="p-2.5 text-right">{fmtVal(t.max)}</td><td className="p-2.5">{t.last.replaceAll("-", ".")}</td>
-                      <td className="p-2.5"><SrcBadge src={t.src} /></td><td className="p-2.5 text-right">{t.jeonse.toFixed(2)}억</td>
+                      <td className="p-2.5"><SrcBadge src={t.src} date={d.snapDate} /></td><td className="p-2.5 text-right">{t.jeonse == null ? "-" : `${t.jeonse.toFixed(2)}억`}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -816,7 +849,7 @@ export default function App() {
                 <table className="w-full text-xs text-left"><tbody className="divide-y divide-slate-200">
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600 w-1/3">위치</th><td className="py-3 px-4">{d.location}</td></tr>
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">진행 단계</th><td className="py-3 px-4"><span className="font-bold text-[#1F3864] mr-2">{STAGES[d.stageIdx]}</span>({d.stageNote}) <GradeBadge g={d.grade} /></td></tr>
-                  <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">세대수</th><td className="py-3 px-4">{d.householdsBefore.toLocaleString()} → {d.householdsAfter.toLocaleString()}세대</td></tr>
+                  <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">세대수</th><td className="py-3 px-4">{d.householdsBefore ? `${d.householdsBefore.toLocaleString()} → ${d.householdsAfter.toLocaleString()}세대` : "미입력(사용자 추가 단지)"}</td></tr>
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">시공사</th><td className="py-3 px-4">{d.builder}</td></tr>
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">비례율</th><td className="py-3 px-4">{d.ratio ? `${(d.ratio * 100).toFixed(2)}%` : "미공개"} <span className="text-[11px] text-slate-400">({d.ratioSource})</span></td></tr>
                   <tr><th className="py-3 px-4 bg-slate-50 font-bold text-slate-600">투자 유의</th><td className="py-3 px-4 leading-relaxed">조합원 지위양도 제한(도시정비법 제39조), 재건축초과이익 환수 대상 여부 확인 필요 [확인필요]</td></tr>

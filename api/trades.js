@@ -4,8 +4,8 @@
 //  - 결과는 CDN에 6시간 캐시 → 공공데이터포털 호출량 최소화
 //  - 응답·오류 메시지에 인증키가 노출되지 않도록 처리
 
-const TRADE_URL = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev";
-const SILV_URL = "https://apis.data.go.kr/1613000/RTMSDataSvcSilvTrade/getRTMSDataSvcSilvTrade";
+export const TRADE_URL = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev";
+export const SILV_URL = "https://apis.data.go.kr/1613000/RTMSDataSvcSilvTrade/getRTMSDataSvcSilvTrade";
 
 // 비교 신축단지 (신축 시세 추정용) — 전용 83~86㎡
 const COMP_SPECS = [
@@ -37,7 +37,7 @@ const OWN_SPECS = [
   { key: "js5_83", lawd: "11710", svc: "trade", re: "^(잠실)?주공(아파트)?5단지$", umd: "잠실동", min: 82, max: 84 },
 ];
 
-const norm = (s) => String(s || "").replace(/[\s()·\-]/g, "");
+export const norm = (s) => String(s || "").replace(/[\s()·\-]/g, "");
 const tag = (xml, t) => {
   const m = xml.match(new RegExp(`<${t}>([\\s\\S]*?)</${t}>`));
   return m ? m[1].trim() : "";
@@ -61,6 +61,7 @@ export function parseItems(xml) {
       date: `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
       cancelled: tag(x, "cdealType") === "O",
       ownership: tag(x, "ownershipGbn"), // 분양권전매: 분/입
+      buildYear: Number(tag(x, "buildYear")) || null,
     });
   }
   const totalCount = Number(tag(xml, "totalCount")) || items.length;
@@ -68,7 +69,7 @@ export function parseItems(xml) {
   return { items, totalCount, resultCode };
 }
 
-const median = (arr) => {
+export const median = (arr) => {
   if (!arr.length) return null;
   const s = [...arr].sort((a, b) => a - b);
   const h = Math.floor(s.length / 2);
@@ -98,6 +99,13 @@ export function summarize(spec, items) {
   };
 }
 
+export function monthsEnding(ym) {
+  let y = Number(ym.slice(0, 4)), m = Number(ym.slice(4, 6));
+  const out = [];
+  for (let i = 0; i < 12; i++) { out.unshift(`${y}${String(m).padStart(2, "0")}`); m -= 1; if (m === 0) { m = 12; y -= 1; } }
+  return out;
+}
+
 export function months12(now = new Date()) {
   const kst = new Date(now.getTime() + 9 * 3600 * 1000);
   let y = kst.getUTCFullYear(), m = kst.getUTCMonth() + 1;
@@ -109,19 +117,25 @@ export function months12(now = new Date()) {
   return out;
 }
 
-async function getXml(url, tries = 2) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 공공데이터포털 과다호출(HTTP 429) 대비: 최대 4회, 점증 대기 후 재시도
+async function getXml(url, tries = 4) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
+      if (r.status === 429) throw Object.assign(new Error("HTTP 429"), { retryWait: 1000 * 2 ** i });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return await r.text();
-    } catch (e) { lastErr = e; }
+    } catch (e) {
+      lastErr = e;
+      if (i < tries - 1) await sleep(e.retryWait || 400);
+    }
   }
   throw lastErr;
 }
 
-async function fetchMonth(base, key, lawd, ym) {
+export async function fetchMonth(base, key, lawd, ym) {
   const all = [];
   let page = 1, total = Infinity;
   while (all.length < total && page <= 5) {
@@ -137,7 +151,7 @@ async function fetchMonth(base, key, lawd, ym) {
   return all;
 }
 
-async function pool(tasks, n) {
+export async function pool(tasks, n) {
   const res = new Array(tasks.length);
   let i = 0;
   await Promise.all(Array.from({ length: n }, async () => {
@@ -154,7 +168,7 @@ export async function collect(fetchMonthFn, months) {
     const [svc, lawd] = c.split("|");
     for (const ym of months) jobs.push({ svc, lawd, ym });
   }
-  const results = await pool(jobs.map((j) => () => fetchMonthFn(j.svc, j.lawd, j.ym)), 8);
+  const results = await pool(jobs.map((j) => () => fetchMonthFn(j.svc, j.lawd, j.ym)), 4); // 동시 4건으로 제한
   const byCombo = {};
   let failed = 0;
   const errs = [];
@@ -162,7 +176,7 @@ export async function collect(fetchMonthFn, months) {
     const k = `${jobs[idx].svc}|${jobs[idx].lawd}`;
     byCombo[k] = byCombo[k] || [];
     if (r.ok) byCombo[k].push(...r.v);
-    else { failed += 1; errs.push(String((r.e && r.e.message) || r.e).slice(0, 120)); }
+    else { failed += 1; errs.push(`${jobs[idx].svc}/${jobs[idx].lawd}/${jobs[idx].ym}: ${String((r.e && r.e.message) || r.e).slice(0, 100)}`); }
   });
   const comps = {}, own = {};
   for (const s of COMP_SPECS) comps[s.key] = summarize(s, byCombo[`${s.svc}|${s.lawd}`] || []);
@@ -183,7 +197,8 @@ export default async function handler(req, res) {
   const errSamples = new Set(r.errs.map((e) => e.split(key).join("***").split(raw.trim()).join("***")));
   const jobs = { length: calls };
   const ok = failed < jobs.length * 0.3; // 호출 30% 이상 실패 시 실시간 사용 안 함
-  res.setHeader("Cache-Control", ok ? "s-maxage=21600, stale-while-revalidate=86400" : "no-store");
+  // 전부 성공 6시간 캐시, 일부 실패 10분 캐시(곧 재조회), 30% 이상 실패 시 캐시 안 함
+  res.setHeader("Cache-Control", !ok ? "no-store" : failed === 0 ? "s-maxage=21600, stale-while-revalidate=86400" : "s-maxage=600");
   res.status(200).json({
     ok,
     reason: ok ? undefined : `실거래가 API 호출 실패 (${failed}/${jobs.length}건)`,

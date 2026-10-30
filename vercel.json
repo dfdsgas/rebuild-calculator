@@ -1,6 +1,7 @@
 {
   "regions": ["icn1"],
   "functions": {
-    "api/trades.js": { "maxDuration": 60 }
+    "api/trades.js": { "maxDuration": 60 },
+    "api/district.js": { "maxDuration": 60 }
   }
 }
