@@ -77,9 +77,11 @@ export default function AddComplex({ onAdd, onClose }) {
     const c = data.complexes.find((x) => `${x.u}|${x.n}` === k);
     const main = [...c.g].sort((a, b) => b.c - a.c)[0];
     setAreaK(main ? main.k : null);
-    // 기본 비교단지: 같은 동 우선, 준공 15년 이내 매매 또는 입주권, 거래 많은 순 2곳
+    // 기본 비교단지 2곳: 준공 15년 이내 매매 또는 입주권 중 점수순
+    //  같은 동 +2, 입주권(곧 입주할 재건축 신축) +1.5, 준공 10년 이내 +1, 거래 5건 이상 +1 → 동점이면 거래 많은 순
+    const score = (x) => (x.u === c.u ? 2 : 0) + (x.type === "입주권" ? 1.5 : 0) + (x.y && x.y >= endYear - 10 ? 1 : 0) + (x.c >= 5 ? 1 : 0);
     const pool = [...data.comps].filter((x) => !(x.n === c.n && x.u === c.u) && (x.type === "입주권" || x.y >= endYear - 15))
-      .sort((a, b) => ((b.u === c.u) - (a.u === c.u)) || (b.c - a.c)).slice(0, 2);
+      .sort((a, b) => (score(b) - score(a)) || (b.c - a.c)).slice(0, 2);
     setPicked(Object.fromEntries(pool.map((x) => [compKey(x), 0])));
   };
 

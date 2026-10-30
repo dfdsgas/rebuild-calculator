@@ -24,6 +24,9 @@ const COLORS = { sinbanpo2: "#3B82F6", apgujeong5: "#F59E0B", eunma: "#10B981", 
 const EXTRA_COLORS = ["#E11D48", "#8B5CF6", "#0EA5E9", "#84CC16", "#F97316", "#14B8A6", "#A855F7", "#64748B"];
 const STORE_KEY = "rebuild-calculator-custom-v1";
 const loadCustom = () => { try { const v = JSON.parse(window.localStorage.getItem(STORE_KEY) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
+const HIDE_KEY = "rebuild-calculator-hidden-v1";
+const loadHidden = () => { try { const v = JSON.parse(window.localStorage.getItem(HIDE_KEY) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } };
+const saveHidden = (v) => { try { window.localStorage.setItem(HIDE_KEY, JSON.stringify(v)); } catch { /* 무시 */ } };
 const saveCustom = (v) => { try { window.localStorage.setItem(STORE_KEY, JSON.stringify(v)); } catch { /* 저장 불가 환경 무시 */ } };
 const GRADE_STYLE = { C: "bg-rose-100 text-rose-800", B: "bg-amber-100 text-amber-800", A: "bg-emerald-100 text-emerald-800", "A+": "bg-emerald-600 text-white" };
 
@@ -113,10 +116,17 @@ export default function App() {
     setAdj((p) => ({ ...p, [c.id]: { ...BASE_ADJ } })); setLevy((p) => ({ ...p, [c.id]: 0 }));
     setCustom((p) => [...p, c]); setShowAdd(false); setDetailId(c.id);
   };
+  const [hidden, setHidden] = useState(loadHidden); // 기본 단지 숨기기(삭제 아님, 언제든 복원)
+  const [confirmDel, setConfirmDel] = useState(null); // 삭제 확인 대기 단지 id
+  useEffect(() => { saveHidden(hidden); }, [hidden]);
+  const SHOWN = useMemo(() => ALL.filter((c) => !hidden.includes(c.id)), [ALL, hidden]);
   const removeCustom = (id) => {
     setCustom((p) => p.filter((c) => c.id !== id));
-    [setDetailId, setPathId, setSensId].forEach((f) => f((cur) => (cur === id ? "jamsil5" : cur)));
+    setHidden((h) => h.filter((x) => x !== id));
+    setConfirmDel(null);
   };
+  const toggleHide = (id) => setHidden((h) => (h.includes(id) ? h.filter((x) => x !== id) : SHOWN.length <= 1 ? h : [...h, id]));
+  const removeAllCustom = () => { setCustom([]); setHidden((h) => h.filter((x) => COMPLEXES.some((c) => c.id === x))); setConfirmDel(null); };
   const colorOf = (id) => COLORS[id] || EXTRA_COLORS[Math.max(0, custom.findIndex((c) => c.id === id)) % EXTRA_COLORS.length];
   const [mode, setMode] = useState("all");
   const [basis, setBasis] = useState("self");
@@ -163,11 +173,13 @@ export default function App() {
   const allUniform = uV !== null && uY !== null && uG !== null;
 
   const results = useMemo(() => ACTIVE.map((c) => evaluate(c, adj[c.id] || BASE_ADJ, opt)), [ACTIVE, adj, opt]);
-  const ranked = useMemo(() => [...results].sort((x, y) => (rankBy === "annual" ? y.annualReturn - x.annualReturn : y.riskAdj - x.riskAdj)), [results, rankBy]);
+  const shownRes = useMemo(() => results.filter((r) => !hidden.includes(r.id)), [results, hidden]);
+  const ranked = useMemo(() => [...shownRes].sort((x, y) => (rankBy === "annual" ? y.annualReturn - x.annualReturn : y.riskAdj - x.riskAdj)), [shownRes, rankBy]);
   const rankOf = (id) => ranked.findIndex((c) => c.id === id) + 1;
   const byId = (id) => results.find((r) => r.id === id);
+  const pick = (id) => shownRes.find((r) => r.id === id) || shownRes[0]; // 숨김·삭제된 단지 선택 시 첫 표시 단지로 대체
   const activeById = (id) => ACTIVE.find((c) => c.id === id);
-  const d = byId(detailId) || byId("jamsil5");
+  const d = pick(detailId);
 
   const goDetail = (id) => { setDetailId(id); const el = document.getElementById("evidence"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); };
 
@@ -176,15 +188,15 @@ export default function App() {
     const out = [];
     for (let r = 0; r <= 7.05; r += 0.5) {
       const item = { growthRate: `${r.toFixed(1)}%` };
-      ACTIVE.forEach((c) => { const e = evaluate(c, { ...adj[c.id], growth: r / 100 }, opt); item[c.name] = e.isValid ? +(e.annualReturn * 100).toFixed(2) : null; });
+      ACTIVE.filter((c) => !hidden.includes(c.id)).forEach((c) => { const e = evaluate(c, { ...adj[c.id], growth: r / 100 }, opt); item[c.name] = e.isValid ? +(e.annualReturn * 100).toFixed(2) : null; });
       out.push(item);
     }
     return out;
-  }, [ACTIVE, adj, opt]);
+  }, [ACTIVE, adj, opt, hidden]);
 
   // 민감도: 토네이도
   const tornado = useMemo(() => {
-    const c = activeById(sensId) || activeById("jamsil5"); const a = adj[c.id] || BASE_ADJ; const base = evaluate(c, a, opt).annualReturn;
+    const c = activeById(pick(sensId).id); const a = adj[c.id] || BASE_ADJ; const base = evaluate(c, a, opt).annualReturn;
     const f = (o) => (evaluate(c, { ...a, ...o }, opt).annualReturn - base) * 100;
     const rows = [
       { name: "신축 시세 ±10%", lo: f({ valueAdj: a.valueAdj - 0.1 }), hi: f({ valueAdj: a.valueAdj + 0.1 }) },
@@ -196,7 +208,7 @@ export default function App() {
       rows.push({ name: c.share >= 0 ? "분담금 ±30%" : "환급금 ±30%", lo: f({ shareAdj: c.share >= 0 ? 0.3 : -0.3 }), hi: f({ shareAdj: c.share >= 0 ? -0.3 : 0.3 }) });
     }
     return rows.map((r) => ({ ...r, lo: +r.lo.toFixed(2), hi: +r.hi.toFixed(2), width: Math.abs(r.hi - r.lo) })).sort((x, y) => y.width - x.width);
-  }, [ACTIVE, adj, opt, sensId, basis]);
+  }, [ACTIVE, adj, opt, sensId, basis, shownRes]);
 
   const heatYears = [-3, -2, -1, 0, 1, 2, 3, 5];
   const heatValues = [0.30, 0.20, 0.10, 0.05, 0.0, -0.05, -0.10, -0.20, -0.30];
@@ -209,7 +221,7 @@ export default function App() {
     return "bg-emerald-300 text-emerald-950 font-bold";
   };
 
-  const p = byId(pathId) || byId("jamsil5");
+  const p = pick(pathId);
   const pathData = p.path.filter((s, k) => k >= p.stageIdx).map((s) => ({ ...s, label: s.k === p.stageIdx ? `현재(${STAGES[p.stageIdx]})` : s.stage, priceR: +s.price.toFixed(2) }));
 
   return (
@@ -317,7 +329,7 @@ export default function App() {
             <div className="mt-6">
               <p className="text-xs text-slate-500 mb-4">단지마다 가정을 따로 정합니다. 버튼으로 <strong>실거래 추정 / 기준 / 민간분석</strong> 값을 바로 불러올 수 있습니다.</p>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-                {ACTIVE.map((c) => {
+                {ACTIVE.filter((c) => !hidden.includes(c.id)).map((c) => {
                   const a = adj[c.id]; const r = byId(c.id);
                   const val = c.baseValue * (1 + a.valueAdj); const yrs = c.baseYears + a.yearAdj;
                   const vLow = c.valueLow / c.baseValue - 1, vHigh = c.valueHigh / c.baseValue - 1;
@@ -382,7 +394,7 @@ export default function App() {
                 <div>
                   <div className="text-xs font-bold text-slate-700 mb-2">재건축부담금(재초환) 추정 — 자체 산정에만 적용, 입주 시 납부</div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {ALL.map((c) => (
+                    {SHOWN.map((c) => (
                       <label key={c.id} className="text-[11px] text-slate-600">
                         {c.name}
                         <div className="flex items-center gap-1 mt-0.5">
@@ -419,6 +431,36 @@ export default function App() {
           </div>
 
           {showAdd && <AddComplex onAdd={addCustom} onClose={() => setShowAdd(false)} />}
+          <div data-testid="manage-bar" className="bg-white rounded-xl border border-slate-200 p-3 flex flex-col gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-bold text-slate-700">비교 대상 {SHOWN.length}개 <span className="font-normal text-slate-500">— 눌러서 표시/숨기기, 추가 단지는 ✕로 삭제</span></span>
+              <div className="flex items-center gap-2 text-[11px]">
+                {hidden.length > 0 && <button data-testid="show-all" onClick={() => setHidden([])} className="font-semibold text-[#1F3864] hover:underline">숨긴 단지 모두 표시</button>}
+                {custom.length > 0 && (confirmDel === "__all__"
+                  ? <span className="flex items-center gap-1"><span className="text-rose-600 font-bold">추가 단지 {custom.length}개 모두 삭제할까요?</span>
+                      <button data-testid="del-all-yes" onClick={removeAllCustom} className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold">삭제</button>
+                      <button onClick={() => setConfirmDel(null)} className="px-2 py-0.5 rounded bg-slate-100 font-bold">취소</button></span>
+                  : <button data-testid="del-all" onClick={() => setConfirmDel("__all__")} className="font-semibold text-rose-600 hover:underline">추가 단지 전체 삭제</button>)}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {ALL.map((c) => {
+                const on = !hidden.includes(c.id);
+                return (
+                  <span key={c.id} className={`inline-flex items-center rounded-full border text-xs font-semibold overflow-hidden ${on ? "border-[#1F3864] bg-indigo-50 text-[#1F3864]" : "border-slate-200 bg-slate-50 text-slate-400 line-through"}`}>
+                    <button data-testid={`toggle-${c.id}`} onClick={() => toggleHide(c.id)} title={on ? "숨기기" : "다시 표시"} className="px-2.5 py-1">
+                      {on ? "✓ " : ""}{c.name}{c.isCustom ? " (추가)" : ""}
+                    </button>
+                    {c.isCustom && (confirmDel === c.id
+                      ? <span className="flex items-center gap-1 pr-1.5 no-underline"><button data-testid={`del-yes-${c.id}`} onClick={() => removeCustom(c.id)} className="px-1.5 rounded bg-rose-600 text-white">삭제</button><button onClick={() => setConfirmDel(null)} className="px-1.5 rounded bg-slate-200 text-slate-700">취소</button></span>
+                      : <button data-testid={`del-${c.id}`} onClick={() => setConfirmDel(c.id)} title="삭제" className="pr-2 pl-0.5 text-slate-400 hover:text-rose-600">✕</button>)}
+                  </span>
+                );
+              })}
+            </div>
+            {SHOWN.length <= 1 && <span className="text-[11px] text-amber-700">최소 1개 단지는 표시되어야 합니다.</span>}
+          </div>
+
           {custom.length > 0 && (
             <p className="text-[11px] text-slate-500">· 기본 4개 단지는 고시·조합 자료로 정밀 검증한 사례, <span className="text-sky-700 font-bold">사용자 추가</span> 단지는 자동 조회 + 입력값 기반 추정입니다. 추가 단지는 이 브라우저에만 저장됩니다.</p>
           )}
@@ -433,6 +475,7 @@ export default function App() {
                     <div className="flex items-center gap-1">
                       {!isBase(c.a) && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">가정 변경</span>}
                       <GradeBadge g={c.grade} testid={`grade-${c.id}`} />
+                      {!c.isCustom && <button data-testid={`hide-${c.id}`} onClick={() => toggleHide(c.id)} disabled={SHOWN.length <= 1} title="이 단지 숨기기(상단 비교 대상에서 다시 표시)" className="ml-0.5 text-slate-300 hover:text-slate-600 text-xs font-bold disabled:opacity-30">✕</button>}
                     </div>
                   </div>
                   <h3 className="text-lg font-black text-slate-900 tracking-tight">{c.name}</h3>
@@ -440,7 +483,9 @@ export default function App() {
                   {c.isCustom && (
                     <div className="flex items-center justify-between -mt-2 mb-3 text-[10px]">
                       <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-bold">사용자 추가 · 자동 추정</span>
-                      <button data-testid={`remove-${c.id}`} onClick={() => removeCustom(c.id)} className="text-slate-400 hover:text-rose-600 font-semibold">삭제</button>
+                      {confirmDel === c.id
+                        ? <span className="flex items-center gap-1"><button data-testid={`remove-yes-${c.id}`} onClick={() => removeCustom(c.id)} className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold">삭제 확인</button><button onClick={() => setConfirmDel(null)} className="px-2 py-0.5 rounded bg-slate-100 font-bold text-slate-600">취소</button></span>
+                        : <button data-testid={`remove-${c.id}`} onClick={() => setConfirmDel(c.id)} className="px-2 py-0.5 rounded border border-rose-200 text-rose-600 hover:bg-rose-50 font-bold">삭제</button>}
                     </div>
                   )}
                   <div className="bg-slate-50 p-3.5 rounded-xl mb-3 border border-slate-100">
@@ -561,7 +606,7 @@ export default function App() {
         <section id="stage" data-testid="sec-stage" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 sm:p-8 scroll-mt-20">
           <SectionHead no="03" title="사업단계·시간가치 분석"
             desc="재건축 가격은 단계를 통과할 때마다 위험이 줄어 계단식으로 오릅니다. 단계가 이를수록 요구수익률이 높습니다."
-            right={<div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">경로 단지:</span><ComplexSelect list={ALL} testid="path-select" value={p.id} onChange={setPathId} /></div>} />
+            right={<div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">경로 단지:</span><ComplexSelect list={SHOWN} testid="path-select" value={p.id} onChange={setPathId} /></div>} />
 
           <div className="mt-6 overflow-x-auto">
             <table className="w-full text-xs min-w-[860px] text-center" data-testid="stage-table">
@@ -571,7 +616,7 @@ export default function App() {
                 <th className="p-2 font-bold">신뢰도</th>
               </tr></thead>
               <tbody className="divide-y divide-slate-100">
-                {results.map((c) => (
+                {shownRes.map((c) => (
                   <tr key={c.id}>
                     <td className="p-2 text-left font-bold whitespace-nowrap">{c.name}</td>
                     {c.path.map((s) => (
@@ -635,8 +680,8 @@ export default function App() {
             right={<Toggle testid="sens" value={sensTab} onChange={setSensTab} options={[["tornado", "토네이도"], ["heat", "히트맵"], ["line", "상승률별 추이"]]} />} />
           <div className="pt-6">
             {sensTab !== "line" && (
-              <div className="flex items-center gap-2 mb-4"><span className="text-xs font-bold text-slate-700">단지 선택:</span><ComplexSelect list={ALL} testid="sens-select" value={activeById(sensId) ? sensId : "jamsil5"} onChange={setSensId} />
-                <span className="text-xs text-slate-500">현재 연환산 <b className="text-[#1F3864]">{fmtPct((byId(sensId) || byId("jamsil5")).annualReturn)}</b></span></div>
+              <div className="flex items-center gap-2 mb-4"><span className="text-xs font-bold text-slate-700">단지 선택:</span><ComplexSelect list={SHOWN} testid="sens-select" value={pick(sensId).id} onChange={setSensId} />
+                <span className="text-xs text-slate-500">현재 연환산 <b className="text-[#1F3864]">{fmtPct(pick(sensId).annualReturn)}</b></span></div>
             )}
             {sensTab === "tornado" && (
               <div>
@@ -658,7 +703,7 @@ export default function App() {
               </div>
             )}
             {sensTab === "heat" && (() => {
-              const hc = activeById(sensId) || activeById("jamsil5"); const ha = adj[hc.id] || BASE_ADJ;
+              const hc = activeById(pick(sensId).id); const ha = adj[hc.id] || BASE_ADJ;
               return (
                 <div>
                   <div className="text-xs text-slate-600 mb-3"><strong>기간 조정(가로)</strong> × <strong>시세 조정(세로)</strong> → 연환산 수익률 · 상승률은 이 단지의 현재 가정 <strong>{(ha.growth * 100).toFixed(1)}%</strong></div>
@@ -706,7 +751,7 @@ export default function App() {
                       <Tooltip formatter={(v, n) => [`${v}%`, n]} />
                       <Legend wrapperStyle={{ fontSize: '12px' }} />
                       {uG !== null && <ReferenceLine x={`${(Math.round(uG * 200) / 2).toFixed(1)}%`} stroke="#EF4444" strokeDasharray="4 4" label={{ value: '현재 가정', position: 'top', fill: '#EF4444', fontSize: 11 }} />}
-                      {ALL.map((c) => <Line key={c.id} type="monotone" dataKey={c.name} stroke={colorOf(c.id)} strokeWidth={c.id === "jamsil5" ? 3 : 2} dot={false} />)}
+                      {SHOWN.map((c) => <Line key={c.id} type="monotone" dataKey={c.name} stroke={colorOf(c.id)} strokeWidth={c.id === "jamsil5" ? 3 : 2} dot={false} />)}
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -718,7 +763,7 @@ export default function App() {
         {/* ===================== 05 근거 데이터 ===================== */}
         <section id="evidence" data-testid="sec-evidence" className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 sm:p-8 scroll-mt-20">
           <SectionHead no="05" title="근거 데이터 및 계산 과정" desc="신축 시세를 어느 단지에서, 언제 거래된 얼마의 실거래로 추정했는지 확인하세요."
-            right={<div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">단지 전환:</span><ComplexSelect list={ALL} testid="detail-select" value={d.id} onChange={setDetailId} /></div>} />
+            right={<div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">단지 전환:</span><ComplexSelect list={SHOWN} testid="detail-select" value={d.id} onChange={setDetailId} /></div>} />
 
           <div className="mt-6">
             <h4 className="text-sm font-black text-slate-800 mb-3">① 기준값 구성</h4>
