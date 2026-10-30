@@ -151,6 +151,7 @@ export default function AddComplex({ onAdd, onClose }) {
             <>
               <input data-testid="add-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="단지명·동 검색 (예: 은마, 대치동)" className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm w-60" />
               <label className="text-xs text-slate-600 flex items-center gap-1"><input type="checkbox" checked={onlyOld} onChange={(e) => setOnlyOld(e.target.checked)} /> 준공 30년 이상만</label>
+              {data.partial && <span className="text-[11px] text-amber-700">⚠ {data.reason}</span>}
               <span className="text-[11px] text-slate-400">{data.period.from.slice(0, 4)}.{Number(data.period.from.slice(4))}~{data.period.to.slice(0, 4)}.{Number(data.period.to.slice(4))} 거래 · {data.complexes.length}개 단지</span>
             </>
           )}

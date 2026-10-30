@@ -3,7 +3,7 @@
 //  GET /api/district?lawd=11680&to=202608  지정 월까지 12개월(재현·발표용)
 //  - 아파트 매매(상세) 12회 + 분양권전매 12회 = 24회 호출, 결과 6시간 CDN 캐시
 //  - 응답: 단지별·평형별 거래 요약(complexes), 주변 신축·입주권 84㎡ 후보(comps)
-import { TRADE_URL, SILV_URL, parseItems, fetchMonth, pool, months12, monthsEnding, median } from "./trades.js";
+import { TRADE_URL, SILV_URL, fetchMonth, pool, months12, monthsEnding, median, startBudget } from "./trades.js";
 
 const SEOUL_LAWD = new Set(["11110", "11140", "11170", "11200", "11215", "11230", "11260", "11290", "11305", "11320", "11350", "11380", "11410", "11440", "11470", "11500", "11530", "11545", "11560", "11590", "11620", "11650", "11680", "11710", "11740"]);
 const r2 = (v) => Math.round(v * 100) / 100;
@@ -72,18 +72,20 @@ export default async function handler(req, res) {
   const months = to ? monthsEnding(to) : months12();
   const jobs = [];
   for (const ym of months) { jobs.push({ svc: "trade", ym }); jobs.push({ svc: "silv", ym }); }
-  const results = await pool(jobs.map((j) => () => fetchMonth(j.svc === "silv" ? SILV_URL : TRADE_URL, key, lawd, j.ym)), 4);
+  startBudget();
+  const results = await pool(jobs.map((j) => () => fetchMonth(j.svc === "silv" ? SILV_URL : TRADE_URL, key, lawd, j.ym)), 3);
   const trades = [], silvs = [], errs = [];
   results.forEach((r, i) => {
     if (r.ok) (jobs[i].svc === "silv" ? silvs : trades).push(...r.v);
     else errs.push(`${jobs[i].svc}/${jobs[i].ym}: ${String((r.e && r.e.message) || r.e).split(key).join("***").slice(0, 80)}`);
   });
   const failed = errs.length;
-  const ok = failed < jobs.length * 0.3;
+  const ok = failed <= 2; // 24건 중 2건(한두 달)까지만 누락 허용 — 누락 시 화면에 경고
   const out = summarizeDistrict(trades, silvs, Number(months.at(-1).slice(0, 4)));
-  res.setHeader("Cache-Control", !ok ? "no-store" : failed === 0 ? "s-maxage=21600, stale-while-revalidate=86400" : "s-maxage=600");
+  res.setHeader("Cache-Control", failed === 0 ? "s-maxage=21600, stale-while-revalidate=86400" : ok ? "s-maxage=1800" : "s-maxage=300");
   res.status(200).json({
-    ok, reason: ok ? undefined : `실거래가 API 호출 실패 (${failed}/${jobs.length}건)`,
+    ok, partial: failed > 0,
+    reason: ok ? (failed ? `${failed}개월분 조회 실패 — 거래 건수가 일부 적게 잡힐 수 있음` : undefined) : `실거래가 API 호출 실패 ${failed}/${jobs.length}건 (${(errs[0] || "").split(": ").slice(1).join(": ")})`,
     lawd, period: { from: months[0], to: months.at(-1) }, fetchedAt: new Date().toISOString(),
     calls: jobs.length, failed, errors: errs.slice(0, 3), ...out,
   });

@@ -241,7 +241,7 @@ export default function App() {
             <span className="flex items-center gap-1.5 text-xs font-semibold">
               <span className={`w-2 h-2 rounded-full ${liveStatus === "ok" ? (useLive ? "bg-emerald-500" : "bg-slate-400") : liveStatus === "loading" ? "bg-amber-400 animate-pulse" : "bg-rose-500"}`}></span>
               {liveStatus === "loading" && "국토부 실거래가 조회 중…"}
-              {liveStatus === "ok" && (useLive ? `실시간 실거래 반영 · ${fetchedText} 조회` : "고정 기준값 사용 중 (2026.8까지 거래)")}
+              {liveStatus === "ok" && (useLive ? `실시간 실거래 반영 · ${fetchedText} 조회${live.partial ? " (일부 단지 조회 실패 → 고정값)" : ""}` : "고정 기준값 사용 중 (2026.8까지 거래)")}
               {liveStatus === "fail" && `실시간 연결 실패 → 고정 기준값 사용 (${liveReason})`}
             </span>
             <div className="inline-flex p-0.5 rounded-lg bg-slate-100 text-[11px] font-bold">

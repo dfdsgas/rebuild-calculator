@@ -118,18 +118,39 @@ export function months12(now = new Date()) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// 공공데이터포털 과다호출(HTTP 429) 대비: 최대 4회, 점증 대기 후 재시도
-async function getXml(url, tries = 4) {
+export const DEADLINE_MS = 45000; // 함수 제한시간(60초) 전에 끝내기 위한 작업 예산
+let deadline = Infinity;
+export const startBudget = () => { deadline = Date.now() + DEADLINE_MS; };
+
+// 공공데이터포털 오류 응답(HTTP 200이지만 OpenAPI_ServiceResponse) 판별
+function serviceError(text) {
+  const code = (text.match(/<returnReasonCode>(\d+)<\/returnReasonCode>/) || [])[1];
+  if (code) return { code, retry: false, msg: code === "22" ? "일일 호출 한도 초과(22)" : code === "30" || code === "31" ? `인증키 오류(${code})` : `서비스 오류(${code})` };
+  if (/LIMITED_NUMBER_OF_SERVICE_REQUESTS/.test(text)) return { code: "22", retry: false, msg: "일일 호출 한도 초과(22)" };
+  if (/SERVICE_KEY_IS_NOT_REGISTERED/.test(text)) return { code: "30", retry: false, msg: "인증키 미등록(30)" };
+  return null;
+}
+
+// 과다호출(429)·일시 오류 대비: 최대 3회, 1초·2초 대기(Retry-After 우선, 최대 5초) 후 재시도, 작업 예산 초과 시 중단
+async function getXml(url, tries = 3) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
+    if (Date.now() > deadline) throw lastErr || new Error("시간 초과");
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
-      if (r.status === 429) throw Object.assign(new Error("HTTP 429"), { retryWait: 1000 * 2 ** i });
+      const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (r.status === 429) {
+        const ra = Number(r.headers && r.headers.get && r.headers.get("retry-after")) || 0;
+        throw Object.assign(new Error("호출 제한(429)"), { retryWait: Math.min(5000, ra ? ra * 1000 : 1000 * 2 ** i + Math.random() * 400) });
+      }
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return await r.text();
+      const text = await r.text();
+      const se = serviceError(text);
+      if (se) throw Object.assign(new Error(se.msg), { noRetry: !se.retry });
+      return text;
     } catch (e) {
       lastErr = e;
-      if (i < tries - 1) await sleep(e.retryWait || 400);
+      if (e.noRetry) break;
+      if (i < tries - 1) await sleep(Math.min(e.retryWait || 600, Math.max(0, deadline - Date.now())));
     }
   }
   throw lastErr;
@@ -168,20 +189,22 @@ export async function collect(fetchMonthFn, months) {
     const [svc, lawd] = c.split("|");
     for (const ym of months) jobs.push({ svc, lawd, ym });
   }
-  const results = await pool(jobs.map((j) => () => fetchMonthFn(j.svc, j.lawd, j.ym)), 4); // 동시 4건으로 제한
-  const byCombo = {};
+  const results = await pool(jobs.map((j) => () => fetchMonthFn(j.svc, j.lawd, j.ym)), 3); // 동시 3건으로 제한
+  const byCombo = {}, badCombo = new Set();
   let failed = 0;
   const errs = [];
   results.forEach((r, idx) => {
     const k = `${jobs[idx].svc}|${jobs[idx].lawd}`;
     byCombo[k] = byCombo[k] || [];
     if (r.ok) byCombo[k].push(...r.v);
-    else { failed += 1; errs.push(`${jobs[idx].svc}/${jobs[idx].lawd}/${jobs[idx].ym}: ${String((r.e && r.e.message) || r.e).slice(0, 100)}`); }
+    else { failed += 1; badCombo.add(k); errs.push(`${jobs[idx].svc}/${jobs[idx].lawd}/${jobs[idx].ym}: ${String((r.e && r.e.message) || r.e).slice(0, 100)}`); }
   });
+  // 12개월 중 한 달이라도 빠진 구·서비스 조합은 실시간 값을 쓰지 않고(count 0) 화면에서 고정값으로 대체
   const comps = {}, own = {};
-  for (const s of COMP_SPECS) comps[s.key] = summarize(s, byCombo[`${s.svc}|${s.lawd}`] || []);
-  for (const s of OWN_SPECS) own[s.key] = summarize(s, byCombo[`${s.svc}|${s.lawd}`] || []);
-  return { comps, own, calls: jobs.length, failed, errs };
+  const sum = (s) => (badCombo.has(`${s.svc}|${s.lawd}`) ? { count: 0, partial: true, names: [] } : summarize(s, byCombo[`${s.svc}|${s.lawd}`] || []));
+  for (const s of COMP_SPECS) comps[s.key] = sum(s);
+  for (const s of OWN_SPECS) own[s.key] = sum(s);
+  return { comps, own, calls: jobs.length, failed, errs, combos: combos.length, goodCombos: combos.length - badCombo.size };
 }
 
 export default async function handler(req, res) {
@@ -192,16 +215,18 @@ export default async function handler(req, res) {
   }
   const key = raw.includes("%") ? raw.trim() : encodeURIComponent(raw.trim());
   const months = months12();
+  startBudget();
   const r = await collect((svc, lawd, ym) => fetchMonth(svc === "silv" ? SILV_URL : TRADE_URL, key, lawd, ym), months);
   const { comps, own, calls, failed } = r;
   const errSamples = new Set(r.errs.map((e) => e.split(key).join("***").split(raw.trim()).join("***")));
   const jobs = { length: calls };
-  const ok = failed < jobs.length * 0.3; // 호출 30% 이상 실패 시 실시간 사용 안 함
-  // 전부 성공 6시간 캐시, 일부 실패 10분 캐시(곧 재조회), 30% 이상 실패 시 캐시 안 함
-  res.setHeader("Cache-Control", !ok ? "no-store" : failed === 0 ? "s-maxage=21600, stale-while-revalidate=86400" : "s-maxage=600");
+  const ok = r.goodCombos > 0; // 완전한 구·서비스 조합이 하나라도 있으면 그 단지들만 실시간 반영
+  const firstErr = [...errSamples][0] ? [...errSamples][0].split(": ").slice(1).join(": ") : "";
+  // 전부 성공 6시간, 일부 실패 30분, 전부 실패 5분 캐시 — 실패 시 방문자마다 재호출해 한도를 소진하지 않도록
+  res.setHeader("Cache-Control", failed === 0 ? "s-maxage=21600, stale-while-revalidate=86400" : ok ? "s-maxage=1800" : "s-maxage=300");
   res.status(200).json({
-    ok,
-    reason: ok ? undefined : `실거래가 API 호출 실패 (${failed}/${jobs.length}건)`,
+    ok, partial: failed > 0,
+    reason: ok ? (failed ? `일부 조회 실패 ${failed}/${jobs.length}건(${firstErr}) — 해당 단지는 고정값 사용` : undefined) : `실거래가 API 호출 실패 ${failed}/${jobs.length}건 (${firstErr})`,
     period: { from: months[0], to: months.at(-1) },
     fetchedAt: new Date().toISOString(),
     calls: jobs.length, failed, errors: [...errSamples].slice(0, 3),
